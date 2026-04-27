@@ -225,14 +225,15 @@ export async function scrapeDetails(browser, category, items) {
  * @returns {Promise<DetailRecord>} Combined detail record.
  */
 export async function scrapeSingleDetail(browser, category, slug) {
-  return (await scrapeDetails(browser, category, [{
+  const records = await scrapeDetails(browser, category, [{
     slug,
     title: '',
     thumbnail: '',
     url: '',
-  }]))
-    .find((record) => record.slug === slug) ??
-    /* istanbul ignore next */ Promise.reject(
-      new Error(`scrapeSingleDetail: no record produced for ${slug}`),
-    );
+  }]);
+  const record = records.find((entry) => entry.slug === slug);
+  if (!record) {
+    throw new Error(`scrapeSingleDetail: no record produced for ${slug}`);
+  }
+  return record;
 }
