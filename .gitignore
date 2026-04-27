@@ -34,3 +34,12 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# scraper artifacts
+/output/*.json
+!/output/.gitkeep
+/logs/*.log
+!/logs/.gitkeep
+
+# puppeteer browser data
+/.browser_data

@@ -1,0 +1,27 @@
+{
+  "name": "nk-cli",
+  "version": "1.0.0",
+  "description": "Professional Puppeteer-based CLI scraper for nekopoi.care/hentai with resume-friendly listing & detail pipelines.",
+  "type": "module",
+  "main": "main.js",
+  "bin": {
+    "nk-cli": "main.js"
+  },
+  "engines": {
+    "node": ">=18.17"
+  },
+  "scripts": {
+    "start": "node main.js",
+    "scrape": "node main.js",
+    "scrape:list": "node main.js --only=list",
+    "scrape:detail": "node main.js --only=detail",
+    "lint:syntax": "node --check main.js && find src -name '*.js' -print -exec node --check {} \\;"
+  },
+  "dependencies": {
+    "puppeteer": "^23.6.0",
+    "puppeteer-extra": "^3.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2"
+  },
+  "license": "MIT",
+  "author": "kimrinda"
+}
