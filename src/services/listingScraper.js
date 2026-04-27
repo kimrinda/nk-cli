@@ -25,7 +25,12 @@ import {
 import { logger } from '../utils/logger.js';
 import { withRetry, sleep } from '../utils/retry.js';
 import { readJson, writeJson, writeJsonSync } from '../utils/storage.js';
-import { onShutdown } from '../utils/shutdown.js';
+import {
+  getAbortSignal,
+  isShutdownInProgress,
+  onShutdown,
+} from '../utils/shutdown.js';
+import { ProgressManager } from '../utils/progressManager.js';
 
 /**
  * @typedef {import('../parsers/pageItems.js').ListingItem} ListingItem
@@ -119,9 +124,26 @@ async function advanceListingPage(page) {
  *
  * @param {import('puppeteer').Browser} browser Browser launched by the caller.
  * @param {ResolvedCategory} category Category to scrape.
+ * @param {object} [options] Resume controls supplied by the orchestrator.
+ * @param {ProgressManager} [options.progress] Pre-configured progress
+ *   manager. When omitted a fresh per-call manager is created.
+ * @param {number} [options.startPage] One-based page number to resume
+ *   from. Defaults to `1` (run from the first page).
  * @returns {Promise<ListingItem[]>} Final merged list of items.
  */
-export async function scrapeListing(browser, category) {
+export async function scrapeListing(browser, category, options = {}) {
+  const startPage = Math.max(1, options.startPage ?? 1);
+  const progress =
+    options.progress ??
+    new ProgressManager({
+      command: `scrape:${category.key}:listing`,
+      outputFile: category.listingPath,
+    });
+  if (!options.progress) {
+    await progress.init({ lastCompletedIndex: startPage - 2 });
+  }
+  const abortSignal = getAbortSignal();
+
   const page = await newConfiguredPage(browser);
 
   /** @type {ListingItem[]} */
@@ -157,6 +179,20 @@ export async function scrapeListing(browser, category) {
 
     /* eslint-disable no-await-in-loop */
     while (pageNumber <= config.scrape.maxListingPages) {
+      if (abortSignal.aborted || isShutdownInProgress()) {
+        logger.warn(
+          'Listing loop halted by shutdown signal — preserving progress',
+          { category: category.key, lastPage: pageNumber - 1 },
+        );
+        break;
+      }
+
+      if (pageNumber < startPage) {
+        const advanced = await advanceListingPage(page).catch(() => false);
+        if (!advanced) break;
+        pageNumber += 1;
+        continue;
+      }
       const items = await withRetry(
         async () => {
           await waitForListingDom(page);
@@ -189,6 +225,10 @@ export async function scrapeListing(browser, category) {
       });
 
       await writeJson(category.listingPath, [...indexed.values()]);
+      await progress.update({
+        lastCompletedIndex: pageNumber - 1,
+        totalItems: indexed.size,
+      });
 
       const advanced = await withRetry(() => advanceListingPage(page), {
         attempts: config.scrape.retryAttempts,
@@ -224,7 +264,13 @@ export async function scrapeListing(browser, category) {
     });
 
     saveSync();
+    if (!isShutdownInProgress()) {
+      await progress.markCompleted();
+    }
     return [...indexed.values()];
+  } catch (error) {
+    await progress.markFailed(error);
+    throw error;
   } finally {
     await page.close().catch(() => undefined);
   }

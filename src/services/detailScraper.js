@@ -20,7 +20,12 @@ import { getDownloadSection } from '../parsers/downloadSection.js';
 import { logger } from '../utils/logger.js';
 import { withRetry, sleep } from '../utils/retry.js';
 import { readJson, writeJson, writeJsonSync } from '../utils/storage.js';
-import { onShutdown } from '../utils/shutdown.js';
+import {
+  getAbortSignal,
+  isShutdownInProgress,
+  onShutdown,
+} from '../utils/shutdown.js';
+import { ProgressManager } from '../utils/progressManager.js';
 
 /**
  * @typedef {import('../parsers/pageItems.js').ListingItem} ListingItem
@@ -114,9 +119,15 @@ async function scrapeOne(page, category, item) {
  * @param {import('puppeteer').Browser} browser Active Puppeteer browser.
  * @param {ResolvedCategory} category Category being processed.
  * @param {ListingItem[]} items Listing entries produced by the listing scrape.
+ * @param {object} [options] Resume controls supplied by the orchestrator.
+ * @param {ProgressManager} [options.progress] Pre-configured progress
+ *   manager. When omitted a fresh per-call manager is created.
+ * @param {number} [options.startIndex] Zero-based index to start at.
+ *   `0` (default) processes every item; previously-scraped slugs are
+ *   still skipped via the on-disk dedupe.
  * @returns {Promise<DetailRecord[]>} Combined details for every requested slug.
  */
-export async function scrapeDetails(browser, category, items) {
+export async function scrapeDetails(browser, category, items, options = {}) {
   if (!category.detailPath || !category.detailProgressPath) {
     throw new Error(
       `Category "${category.key}" has no detail output configured`,
@@ -124,6 +135,22 @@ export async function scrapeDetails(browser, category, items) {
   }
   const detailPath = category.detailPath;
   const progressPath = category.detailProgressPath;
+
+  const startIndex = Math.max(0, options.startIndex ?? 0);
+  const progress =
+    options.progress ??
+    new ProgressManager({
+      command: `scrape:${category.key}:detail`,
+      outputFile: detailPath,
+      totalItems: items.length,
+    });
+  if (!options.progress) {
+    await progress.init({
+      totalItems: items.length,
+      lastCompletedIndex: startIndex - 1,
+    });
+  }
+  const abortSignal = getAbortSignal();
 
   const page = await newConfiguredPage(browser);
 
@@ -163,10 +190,22 @@ export async function scrapeDetails(browser, category, items) {
 
   try {
     /* eslint-disable no-await-in-loop */
-    for (let i = 0; i < cap; i += 1) {
+    for (let i = startIndex; i < cap; i += 1) {
+      if (abortSignal.aborted || isShutdownInProgress()) {
+        logger.warn(
+          'Detail loop halted by shutdown signal — preserving progress',
+          { category: category.key, lastIndex: i - 1 },
+        );
+        break;
+      }
+
       const item = items[i];
       if (indexed.has(item.slug)) {
         logger.debug('Skipping already-scraped slug', { slug: item.slug });
+        await progress.update({
+          lastCompletedIndex: i,
+          totalItems: cap,
+        });
         continue;
       }
 
@@ -175,6 +214,10 @@ export async function scrapeDetails(browser, category, items) {
         indexed.set(record.slug, record);
         processed += 1;
         await writeJson(progressPath, [...indexed.values()]);
+        await progress.update({
+          lastCompletedIndex: i,
+          totalItems: cap,
+        });
         logger.info('Detail scraped', {
           category: category.key,
           slug: item.slug,
@@ -200,6 +243,10 @@ export async function scrapeDetails(browser, category, items) {
     await writeJson(detailPath, merged);
     await writeJson(progressPath, merged);
 
+    if (!isShutdownInProgress()) {
+      await progress.markCompleted();
+    }
+
     logger.info('Detail scrape complete', {
       category: category.key,
       total: merged.length,
@@ -207,6 +254,9 @@ export async function scrapeDetails(browser, category, items) {
       failed,
     });
     return merged;
+  } catch (error) {
+    await progress.markFailed(error);
+    throw error;
   } finally {
     await page.close().catch(() => undefined);
   }

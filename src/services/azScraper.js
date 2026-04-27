@@ -17,7 +17,8 @@ import { parseAzList } from '../parsers/azList.js';
 import { logger } from '../utils/logger.js';
 import { withRetry } from '../utils/retry.js';
 import { writeJson, writeJsonSync } from '../utils/storage.js';
-import { onShutdown } from '../utils/shutdown.js';
+import { isShutdownInProgress, onShutdown } from '../utils/shutdown.js';
+import { ProgressManager } from '../utils/progressManager.js';
 
 /**
  * @typedef {import('../config/categories.js').ResolvedCategory} ResolvedCategory
@@ -97,13 +98,25 @@ async function enterAzCategory(page, category) {
  *
  * @param {import('puppeteer').Browser} browser Active Puppeteer browser.
  * @param {ResolvedCategory} category Category to scrape (must be an `azIndex`).
+ * @param {object} [options] Resume controls supplied by the orchestrator.
+ * @param {ProgressManager} [options.progress] Pre-configured progress manager.
  * @returns {Promise<AzIndex>} Combined index payload.
  */
-export async function scrapeAzIndex(browser, category) {
+export async function scrapeAzIndex(browser, category, options = {}) {
   if (category.kind !== 'azIndex') {
     throw new Error(
       `scrapeAzIndex: category "${category.key}" is not an azIndex target`,
     );
+  }
+
+  const progress =
+    options.progress ??
+    new ProgressManager({
+      command: `scrape:${category.key}:az`,
+      outputFile: category.listingPath,
+    });
+  if (!options.progress) {
+    await progress.init({ totalItems: 1, lastCompletedIndex: -1 });
   }
 
   const page = await newConfiguredPage(browser);
@@ -153,6 +166,13 @@ export async function scrapeAzIndex(browser, category) {
     };
 
     await writeJson(category.listingPath, payload);
+    if (!isShutdownInProgress()) {
+      await progress.update({
+        lastCompletedIndex: 0,
+        totalItems: 1,
+      });
+      await progress.markCompleted();
+    }
 
     logger.info('A–Z index scrape complete', {
       category: category.key,
@@ -162,6 +182,9 @@ export async function scrapeAzIndex(browser, category) {
     });
 
     return payload;
+  } catch (error) {
+    await progress.markFailed(error);
+    throw error;
   } finally {
     await page.close().catch(() => undefined);
   }
