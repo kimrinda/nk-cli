@@ -19,7 +19,7 @@
   },
   "dependencies": {
     "dotenv": "^16.4.5",
-    "puppeteer": "^23.6.0",
+    "puppeteer": "npm:rebrowser-puppeteer@^23.10.3",
     "puppeteer-extra": "^3.3.6",
     "puppeteer-extra-plugin-stealth": "^2.11.2"
   },
