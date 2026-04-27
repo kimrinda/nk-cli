@@ -71,18 +71,52 @@ export function clickNextPage() {
 }
 
 /**
- * Locate the homepage menu link whose text reads "Hentai" (case-insensitive)
- * and click it. Returns whether the click was successful.
+ * Locate the homepage menu link whose visible text matches `menuText`
+ * (case-insensitive, whitespace-collapsed) and click it.
  *
- * @returns {boolean} True when the Hentai menu was clicked.
+ * Searches every `li > a` so it works for both top-level menu items and
+ * dropdown children. Click is dispatched even if the parent submenu is
+ * still collapsed — programmatic `.click()` does not require visibility.
+ *
+ * @param {string} menuText Target menu text (e.g. "Hentai", "2D Animation").
+ * @returns {boolean} True when a matching link was clicked.
  */
-export function clickHentaiMenu() {
-  const link = [...document.querySelectorAll('li > a')].find(
-    (anchor) => anchor.textContent?.toLowerCase().trim() === 'hentai',
-  );
+export function clickMenuByText(menuText) {
+  const target = (menuText || '').replace(/\s+/g, ' ').trim().toLowerCase();
+  const link = [...document.querySelectorAll('li > a')].find((anchor) => {
+    const text = (anchor.textContent || '').replace(/\s+/g, ' ').trim().toLowerCase();
+    return text === target;
+  });
   if (link instanceof HTMLElement) {
     link.click();
     return true;
   }
   return false;
+}
+
+/**
+ * Test whether the menu link with the given text is rendered.
+ *
+ * Mirrors {@link clickMenuByText}'s normalisation rules so the wait
+ * predicate and the click match the exact same anchor.
+ *
+ * @param {string} menuText Target menu text.
+ * @returns {boolean} True when the link is present in the DOM.
+ */
+export function hasMenuByText(menuText) {
+  const target = (menuText || '').replace(/\s+/g, ' ').trim().toLowerCase();
+  return [...document.querySelectorAll('li > a')].some((anchor) => {
+    const text = (anchor.textContent || '').replace(/\s+/g, ' ').trim().toLowerCase();
+    return text === target;
+  });
+}
+
+/**
+ * Backwards-compatible alias for {@link clickMenuByText} bound to the
+ * Hentai menu. Retained so existing callers and tests keep working.
+ *
+ * @returns {boolean} True when the Hentai menu was clicked.
+ */
+export function clickHentaiMenu() {
+  return clickMenuByText('hentai');
 }

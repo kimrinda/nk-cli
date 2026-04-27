@@ -18,6 +18,7 @@ import { getPageItems } from '../src/parsers/pageItems.js';
 import { getContentBody } from '../src/parsers/contentBody.js';
 import { parseNkPlayer } from '../src/parsers/nkPlayer.js';
 import { getDownloadSection } from '../src/parsers/downloadSection.js';
+import { parseAzList } from '../src/parsers/azList.js';
 
 const fixturesDir = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -119,5 +120,42 @@ test('parsers — DOM extractors against fixture HTML', async (t) => {
     );
     assert.equal(ten80.links.length, 1);
     assert.equal(ten80.links[0].host, 'Mega');
+  });
+
+  await t.test('parseAzList parses groups, items, and tooltip cards', async () => {
+    await page.setContent(await fixture('azIndex.html'), {
+      waitUntil: 'domcontentloaded',
+    });
+    const groups = await page.evaluate(parseAzList);
+
+    assert.deepEqual(Object.keys(groups).sort(), ['A', 'B']);
+    assert.equal(groups.A.count, 2);
+    assert.equal(groups.B.count, 1);
+
+    const alpha = groups.A.items.find((entry) => entry.slug === 'anime-alpha');
+    assert.ok(alpha, 'alpha entry should be found');
+    assert.equal(alpha.id, '100');
+    assert.equal(alpha.title, 'Alpha Series');
+    assert.ok(alpha.tooltip);
+    assert.equal(alpha.tooltip.title, 'Alpha Series');
+    assert.equal(alpha.tooltip.image, 'https://cdn.example.test/alpha.jpg');
+    assert.equal(alpha.tooltip.japaneseName, 'Aruufa Shiriizu');
+    assert.deepEqual(alpha.tooltip.producers, ['Studio Alpha', 'Beta Inc']);
+    assert.equal(alpha.tooltip.type, 'OVA');
+    assert.equal(alpha.tooltip.status, 'Completed');
+    assert.deepEqual(alpha.tooltip.genre, ['Drama', 'Action']);
+    assert.equal(alpha.tooltip.duration, '24 min');
+    assert.equal(alpha.tooltip.score, '8.42');
+
+    // English-labelled fallback (Producer/Duration/Score) on the second item.
+    const amber = groups.A.items.find((entry) => entry.slug === 'anime-amber');
+    assert.ok(amber);
+    assert.deepEqual(amber.tooltip.producers, ['Amber Studio']);
+    assert.equal(amber.tooltip.duration, '22 min');
+    assert.equal(amber.tooltip.score, '7.5');
+
+    const beta = groups.B.items[0];
+    assert.equal(beta.slug, 'anime-beta');
+    assert.equal(beta.tooltip.duration, '1 jam 45 menit');
   });
 });

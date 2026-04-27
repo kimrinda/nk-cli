@@ -6,6 +6,13 @@
  * handlers where async I/O is unsafe. Terminal output is colourised
  * via {@link https://github.com/chalk/chalk chalk}; if chalk fails to
  * load we transparently fall back to plain ASCII.
+ *
+ * Windows note: Chalk auto-detects support via `supports-color`, which
+ * sometimes returns `level=0` inside Windows PowerShell or VS Code's
+ * integrated terminal. To keep colours working there we instantiate a
+ * `new Chalk({ level })` with our own resolution that prefers (in
+ * order): explicit `NK_LOG_COLOR`, `FORCE_COLOR`, `supports-color`'s
+ * detection, and finally a `level=1` Windows TTY fallback.
  */
 
 import fs from 'node:fs';
@@ -25,8 +32,53 @@ const ACTIVE_LEVEL =
   /** @type {keyof typeof LEVELS} */ (process.env.NK_LOG_LEVEL ?? 'info');
 
 /**
- * Lazily-resolved chalk instance. Loaded asynchronously the first time
- * a record is emitted; until then we render plain text.
+ * Resolved chalk colour level (`0`–`3`). Determined once at startup so
+ * the rest of the logger can branch cheaply.
+ *
+ * `0` means "no colour"; `1` is 16-colour ANSI (universally supported),
+ * `2` is 256-colour, `3` is truecolor.
+ *
+ * @type {number}
+ */
+const COLOR_LEVEL = (() => {
+  const explicit = (process.env.NK_LOG_COLOR ?? '').trim().toLowerCase();
+  if (explicit === '0' || explicit === 'false' || explicit === 'no' || explicit === 'off') {
+    return 0;
+  }
+  if (explicit === 'auto' || explicit === '') {
+    /* fall through to auto-detect */
+  } else if (['1', '2', '3'].includes(explicit)) {
+    return Number(explicit);
+  } else if (['true', 'yes', 'on'].includes(explicit)) {
+    return 1;
+  }
+
+  // Honour FORCE_COLOR if the user already exported it.
+  const force = process.env.FORCE_COLOR;
+  if (force !== undefined && force !== '') {
+    const num = Number.parseInt(force, 10);
+    if (Number.isFinite(num)) return Math.max(0, Math.min(3, num));
+    if (['true', 'yes', 'on'].includes(force.toLowerCase())) return 1;
+    if (['false', 'no', 'off'].includes(force.toLowerCase())) return 0;
+  }
+
+  if (!process.stdout.isTTY) return 0;
+
+  // Windows 10+ console hosts (incl. PowerShell + Windows Terminal +
+  // VS Code) support ANSI 16-colour out of the box, but Chalk's
+  // built-in detection misfires on some hosts and returns 0. Force
+  // level 1 so the colours show up reliably.
+  if (process.platform === 'win32') return 1;
+
+  // POSIX TTYs default to truecolor when COLORTERM declares it.
+  if (/^(?:truecolor|24bit)$/i.test(process.env.COLORTERM ?? '')) return 3;
+  return 1;
+})();
+
+/**
+ * Lazily-resolved chalk instance, configured with our explicit colour
+ * level. Loaded asynchronously the first time a record is emitted; until
+ * then we render plain text.
  *
  * @type {import('chalk').ChalkInstance | null}
  */
@@ -35,7 +87,11 @@ let chalk = null;
 /* eslint-disable promise/catch-or-return */
 import('chalk')
   .then((mod) => {
-    chalk = mod.default;
+    if (COLOR_LEVEL > 0 && typeof mod.Chalk === 'function') {
+      chalk = new mod.Chalk({ level: /** @type {0|1|2|3} */ (COLOR_LEVEL) });
+    } else {
+      chalk = mod.default;
+    }
   })
   .catch(() => {
     /* chalk is optional; plain text fallback is fine */
@@ -43,17 +99,11 @@ import('chalk')
 /* eslint-enable promise/catch-or-return */
 
 /**
- * Whether terminal output should include ANSI colour codes. Defaults to
- * on when stdout is a TTY and `NK_LOG_COLOR` has not been disabled.
+ * True when terminal output should include ANSI colour codes.
  *
  * @type {boolean}
  */
-const COLOR_ENABLED = (() => {
-  const raw = (process.env.NK_LOG_COLOR ?? '').toLowerCase();
-  if (raw === '0' || raw === 'false' || raw === 'no' || raw === 'off') return false;
-  if (raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on') return true;
-  return Boolean(process.stdout.isTTY);
-})();
+const COLOR_ENABLED = COLOR_LEVEL > 0;
 
 /**
  * Lazily-created append stream for the active log file.

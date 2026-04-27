@@ -1,10 +1,11 @@
 # nk-cli
 
-A professional Node.js + **Puppeteer** scraper that targets the
-`/hentai` category of `https://nekopoi.care/`. The site sits behind a
-WAF, so plain HTTP requests cannot return the real DOM — this CLI drives
-a real Chromium instance with stealth hardening to render pages exactly
-as a normal browser would.
+A professional Node.js + **Puppeteer** scraper that targets multiple
+categories of `https://nekopoi.care/` (`/hentai`, `/2d-animation`,
+`/3d-hentai`, `/jav-cosplay`, `/jav`, and the `/hentai-list` A–Z index).
+The site sits behind a WAF, so plain HTTP requests cannot return the
+real DOM — this CLI drives a real Chromium instance with stealth
+hardening to render pages exactly as a normal browser would.
 
 ## Highlights
 
@@ -30,7 +31,17 @@ as a normal browser would.
 - **Coloured local-time logs** via [`chalk`](https://www.npmjs.com/package/chalk).
   Terminal output uses local-clock timestamps
   (`YYYY-MM-DD HH:mm:ss.SSS`) and per-level colours; file logs stay
-  plain text.
+  plain text. The logger explicitly forces a chalk colour level on
+  Windows TTYs so PowerShell / Windows Terminal pick up the ANSI codes
+  reliably (see `NK_LOG_COLOR` below).
+- **Sub-command CLI** via [`commander`](https://www.npmjs.com/package/commander)
+  with one command per scraping target (`scrape:hanime`,
+  `scrape:2d-animation`, `scrape:3d-hentai`, `scrape:jav-cosplay`,
+  `scrape:jav`, `scrape:hanimeindex`, `scrape:info`).
+- **Interactive prompt** between the listing and detail phases via
+  [`@inquirer/prompts`](https://www.npmjs.com/package/@inquirer/prompts):
+  the user is asked whether to continue. Set `NK_AUTO_DETAIL=yes|no`
+  for non-interactive runs.
 - Resume-friendly: every page checkpoint is written atomically; SIGINT,
   SIGTERM, uncaught exceptions and unhandled rejections all flush
   in-flight progress before exit.
@@ -47,16 +58,22 @@ as a normal browser would.
 ├─ src/
 │  ├─ browser/
 │  │  └─ launcher.js          # Puppeteer launch + stealth + page setup
+│  ├─ cli/
+│  │  ├─ parser.js            # Commander-based sub-command dispatcher
+│  │  └─ prompt.js            # Inquirer wrapper (with non-TTY fallback)
 │  ├─ config/
-│  │  └─ index.js             # Env-driven configuration
+│  │  ├─ index.js             # Env-driven configuration (browser, paths, …)
+│  │  └─ categories.js        # Registry of every scraping target
 │  ├─ parsers/
-│  │  ├─ pageItems.js         # /category/hentai listing parser
+│  │  ├─ pageItems.js         # /category/<slug> listing parser
 │  │  ├─ contentBody.js       # .konten metadata parser
 │  │  ├─ nkPlayer.js          # #nk-player streaming parser
-│  │  └─ downloadSection.js   # .nk-download-section parser
+│  │  ├─ downloadSection.js   # .nk-download-section parser
+│  │  └─ azList.js            # /category/hentai-list A–Z index parser
 │  ├─ services/
-│  │  ├─ listingScraper.js    # End-to-end listing pipeline
-│  │  └─ detailScraper.js     # End-to-end detail pipeline
+│  │  ├─ listingScraper.js    # Generic listing pipeline (any category)
+│  │  ├─ detailScraper.js     # Generic detail-page pipeline
+│  │  └─ azScraper.js         # A–Z index page pipeline
 │  └─ utils/
 │     ├─ logger.js            # Stdout + daily file logger
 │     ├─ storage.js           # Atomic JSON read/write
@@ -79,20 +96,31 @@ binary.
 
 ## Run
 
-Full pipeline (listing + details):
+The CLI exposes one sub-command per scraping target. After the listing
+phase finishes the program asks whether to continue to the detail-page
+phase ("Yes / No"). Pick the relevant target:
 
 ```bash
-npm run scrape
-# or
-node main.js
+# Category listing scrapers (followed by an interactive Y/N prompt)
+node main.js scrape:hanime          # /category/hentai
+node main.js scrape:2d-animation    # /category/2d-animation
+node main.js scrape:3d-hentai       # /category/3d-hentai
+node main.js scrape:jav-cosplay     # /category/jav-cosplay
+node main.js scrape:jav             # /category/jav
+
+# A–Z index (no detail phase — the tooltip card already carries metadata)
+node main.js scrape:hanimeindex     # /category/hentai-list
+
+# Detail-only runs (skip the listing phase)
+node main.js scrape:info --slug some-anime-slug
+node main.js scrape:info --slug some-anime-slug --category 2d-animation
+node main.js scrape:info --page 2d-animation     # uses 2dAnimationLists.json
 ```
 
-Phase-only runs:
-
-```bash
-node main.js --only=list      # only the /category/hentai pagination
-node main.js --only=detail    # only the per-slug detail extraction
-```
+Set `NK_AUTO_DETAIL=yes` to bypass the interactive prompt and chain the
+detail phase automatically (handy for cron / CI). `NK_AUTO_DETAIL=no`
+stops after the listing without asking. Run `node main.js --help` to
+list every command and its options.
 
 ## Configuration
 
@@ -124,7 +152,8 @@ Available variables:
 | `NK_RETRY_BASE_DELAY_MS` | `2500` | Base backoff delay (doubled each retry). |
 | `NK_POLITE_DELAY_MS` | `800` | Pause between successful requests. |
 | `NK_LOG_LEVEL` | `info` | One of `debug`, `info`, `warn`, `error`. |
-| `NK_LOG_COLOR` | _(auto)_ | Force ANSI colour on/off in terminal output. Defaults to on when stdout is a TTY. File logs are always plain text. |
+| `NK_LOG_COLOR` | _(auto)_ | `auto` (default), `0`/`false` to disable, `1`/`true` for 16-colour ANSI, `2` for 256-colour, `3` for truecolor. The logger forces level `1` on Windows TTYs because chalk's auto-detection misfires inside PowerShell. `FORCE_COLOR=1` works as a fallback. File logs are always plain text. |
+| `NK_AUTO_DETAIL` | _(unset)_ | `yes` / `no` to skip the interactive Y/N prompt between phases. Unset → interactive prompt (or auto-`no` when stdin is not a TTY). |
 | `NK_OUTPUT_DIR` | `output` | Where `hanimeLists.json` / `hanimeDetails.json` are written. |
 | `NK_LOGS_DIR` | `logs` | Where the daily logger writes log files. |
 | `NK_USER_DATA_DIR` | `.browser_data` | Persistent Puppeteer profile directory. |
@@ -136,10 +165,20 @@ Available variables:
 
 ## Outputs
 
-- `output/hanimeLists.json` — full listing (deduped by `slug`).
-- `output/hanimeDetails.json` — final merged detail records.
-- `output/hanimeDetails.progress.json` — per-slug checkpoint file used
-  to resume an interrupted detail run.
+File names follow the pattern `<categoryKey>Lists.json` /
+`<categoryKey>Details.json`:
+
+| Command | Listing file | Detail file |
+| --- | --- | --- |
+| `scrape:hanime` | `output/hanimeLists.json` | `output/hanimeDetails.json` |
+| `scrape:2d-animation` | `output/2dAnimationLists.json` | `output/2dAnimationDetails.json` |
+| `scrape:3d-hentai` | `output/3dHentaiLists.json` | `output/3dHentaiDetails.json` |
+| `scrape:jav-cosplay` | `output/javCosplayLists.json` | `output/javCosplayDetails.json` |
+| `scrape:jav` | `output/javLists.json` | `output/javDetails.json` |
+| `scrape:hanimeindex` | `output/hanimeIndex.json` | _(no detail phase)_ |
+
+A `*Details.progress.json` checkpoint file is written next to each
+detail file so an interrupted run resumes seamlessly.
 
 ## Tests
 

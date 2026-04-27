@@ -1,20 +1,25 @@
 /**
- * @file Listing scraper that walks `/category/hentai` page-by-page.
+ * @file Generic listing scraper that walks any `/category/<slug>` page.
  *
  * Implements:
- *   * Homepage entry → click the "Hentai" menu link
+ *   * Homepage entry → click the matching menu link by text
  *   * Continuous pagination via `.next.page-numbers`
- *   * Resume support: existing `hanimeLists.json` slugs are loaded up-front
+ *   * Resume support: existing listing JSON entries are loaded up-front
  *     and used to deduplicate so re-runs only append new items
  *   * Atomic save after every successful page (and on shutdown)
+ *
+ * The same pipeline is reused for `hanime`, `2d-animation`,
+ * `3d-hentai`, `jav-cosplay` and `jav` — only the menu text and the
+ * output filename differ (see `src/config/categories.js`).
  */
 
 import { config } from '../config/index.js';
 import { newConfiguredPage } from '../browser/launcher.js';
 import {
-  clickHentaiMenu,
+  clickMenuByText,
   clickNextPage,
   getPageItems,
+  hasMenuByText,
   hasNextPage,
 } from '../parsers/pageItems.js';
 import { logger } from '../utils/logger.js';
@@ -24,6 +29,7 @@ import { onShutdown } from '../utils/shutdown.js';
 
 /**
  * @typedef {import('../parsers/pageItems.js').ListingItem} ListingItem
+ * @typedef {import('../config/categories.js').ResolvedCategory} ResolvedCategory
  */
 
 /**
@@ -43,47 +49,46 @@ async function waitForListingDom(page) {
 }
 
 /**
- * Navigate from the homepage to the Hentai category landing page.
+ * Navigate from the homepage to the requested category landing page.
  *
  * Sequence:
- *   1. `goto(home, networkidle2)` — gives the SafeLine WAF challenge
+ *   1. `goto(home, networkidle2)` — give the SafeLine WAF challenge
  *      time to finish (it auto-redirects to the real homepage once
- *      satisfied), so we never start polling for the menu link while
- *      still on the interstitial page.
- *   2. `waitForFunction(... === 'hentai')` with the dedicated WAF
- *      timeout — defaults to 120s but is env-tunable. Once the link
- *      is rendered the wait resolves immediately.
- *   3. Click + waitForNavigation onto `/category/hentai/` and assert
+ *      satisfied).
+ *   2. `waitForFunction(hasMenuByText)` until the menu link renders.
+ *   3. Click + waitForNavigation onto `/category/<slug>/` and assert
  *      the listing DOM (also via the WAF timeout for safety).
  *
  * @param {import('puppeteer').Page} page Configured Puppeteer page.
+ * @param {ResolvedCategory} category Target category whose menu link to click.
  * @returns {Promise<void>} Resolves once the listing DOM is rendered.
  */
-async function enterHentaiCategory(page) {
-  logger.info('Opening homepage', { url: config.homeUrl });
+async function enterCategory(page, category) {
+  logger.info('Opening homepage', { url: config.homeUrl, category: category.key });
   await page.goto(config.homeUrl, {
     waitUntil: 'networkidle2',
     timeout: config.browser.wafTimeoutMs,
   });
 
-  logger.debug('Waiting for Hentai menu link', {
+  logger.debug('Waiting for menu link', {
+    menuText: category.menuText,
     timeoutMs: config.browser.wafTimeoutMs,
   });
-  await page.waitForFunction(
-    () =>
-      [...document.querySelectorAll('li > a')].some(
-        (anchor) => anchor.textContent?.toLowerCase().trim() === 'hentai',
-      ),
-    { timeout: config.browser.wafTimeoutMs, polling: 250 },
-  );
+  await page.waitForFunction(hasMenuByText, {
+    timeout: config.browser.wafTimeoutMs,
+    polling: 250,
+  }, category.menuText);
 
-  logger.info('Clicking Hentai menu');
+  logger.info('Clicking menu link', {
+    menuText: category.menuText,
+    label: category.label,
+  });
   await Promise.all([
     page.waitForNavigation({
       waitUntil: 'domcontentloaded',
       timeout: config.browser.wafTimeoutMs,
     }),
-    page.evaluate(clickHentaiMenu),
+    page.evaluate(clickMenuByText, category.menuText),
   ]);
 
   await waitForListingDom(page);
@@ -113,16 +118,21 @@ async function advanceListingPage(page) {
  * with the freshly-scraped pages (deduplicated by slug).
  *
  * @param {import('puppeteer').Browser} browser Browser launched by the caller.
+ * @param {ResolvedCategory} category Category to scrape.
  * @returns {Promise<ListingItem[]>} Final merged list of items.
  */
-export async function scrapeListing(browser) {
+export async function scrapeListing(browser, category) {
   const page = await newConfiguredPage(browser);
 
   /** @type {ListingItem[]} */
-  const existing = await readJson(config.paths.listingFile, []);
+  const existing = await readJson(category.listingPath, []);
   /** @type {Map<string, ListingItem>} */
   const indexed = new Map(existing.map((item) => [item.slug, item]));
-  logger.info('Loaded existing listing entries', { count: indexed.size });
+  logger.info('Loaded existing listing entries', {
+    category: category.key,
+    count: indexed.size,
+    file: category.listingPath,
+  });
 
   /**
    * Persist the in-memory set of items to disk synchronously. Used for
@@ -131,15 +141,15 @@ export async function scrapeListing(browser) {
    * @returns {void}
    */
   const saveSync = () =>
-    writeJsonSync(config.paths.listingFile, [...indexed.values()]);
+    writeJsonSync(category.listingPath, [...indexed.values()]);
 
   onShutdown(saveSync);
 
   try {
-    await withRetry(() => enterHentaiCategory(page), {
+    await withRetry(() => enterCategory(page, category), {
       attempts: config.scrape.retryAttempts,
       baseDelayMs: config.scrape.retryBaseDelayMs,
-      label: 'enterHentaiCategory',
+      label: `enterCategory(${category.key})`,
     });
 
     let pageNumber = 1;
@@ -157,7 +167,7 @@ export async function scrapeListing(browser) {
         {
           attempts: config.scrape.retryAttempts,
           baseDelayMs: config.scrape.retryBaseDelayMs,
-          label: `listingPage(${pageNumber})`,
+          label: `listingPage(${category.key},${pageNumber})`,
         },
       );
 
@@ -171,20 +181,22 @@ export async function scrapeListing(browser) {
       }
 
       logger.info('Listing page scraped', {
+        category: category.key,
         page: pageNumber,
         items: items.length,
         newItems: pageAdds,
         total: indexed.size,
       });
 
-      await writeJson(config.paths.listingFile, [...indexed.values()]);
+      await writeJson(category.listingPath, [...indexed.values()]);
 
       const advanced = await withRetry(() => advanceListingPage(page), {
         attempts: config.scrape.retryAttempts,
         baseDelayMs: config.scrape.retryBaseDelayMs,
-        label: `advanceListingPage(${pageNumber})`,
+        label: `advanceListingPage(${category.key},${pageNumber})`,
       }).catch((error) => {
         logger.error('Failed to advance listing page', {
+          category: category.key,
           page: pageNumber,
           error: error instanceof Error ? error.message : String(error),
         });
@@ -192,7 +204,10 @@ export async function scrapeListing(browser) {
       });
 
       if (!advanced) {
-        logger.info('No more listing pages', { lastPage: pageNumber });
+        logger.info('No more listing pages', {
+          category: category.key,
+          lastPage: pageNumber,
+        });
         break;
       }
 
@@ -202,6 +217,7 @@ export async function scrapeListing(browser) {
     /* eslint-enable no-await-in-loop */
 
     logger.info('Listing scrape complete', {
+      category: category.key,
       pages: pageNumber,
       total: indexed.size,
       newlyAdded: added,

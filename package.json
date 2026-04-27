@@ -12,14 +12,19 @@
   },
   "scripts": {
     "start": "node main.js",
-    "scrape": "node main.js",
-    "scrape:list": "node main.js --only=list",
-    "scrape:detail": "node main.js --only=detail",
+    "scrape:hanime": "node main.js scrape:hanime",
+    "scrape:2d-animation": "node main.js scrape:2d-animation",
+    "scrape:3d-hentai": "node main.js scrape:3d-hentai",
+    "scrape:jav-cosplay": "node main.js scrape:jav-cosplay",
+    "scrape:jav": "node main.js scrape:jav",
+    "scrape:hanimeindex": "node main.js scrape:hanimeindex",
     "lint:syntax": "node --check main.js && find src -name '*.js' -print -exec node --check {} \\;",
     "test": "node --test --test-reporter=spec \"test/**/*.test.js\""
   },
   "dependencies": {
+    "@inquirer/prompts": "^7.10.1",
     "chalk": "^5.6.2",
+    "commander": "^14.0.3",
     "dotenv": "^16.4.5",
     "puppeteer": "npm:rebrowser-puppeteer@^23.10.3",
     "puppeteer-extra": "^3.3.6",

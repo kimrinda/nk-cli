@@ -61,19 +61,25 @@ test(
 
     // Imports happen *after* env vars are set so the frozen `config` picks
     // them up correctly.
-    const [{ launchBrowser, closeBrowser }, { scrapeListing }, { scrapeDetails }] =
-      await Promise.all([
-        import('../src/browser/launcher.js'),
-        import('../src/services/listingScraper.js'),
-        import('../src/services/detailScraper.js'),
-      ]);
+    const [
+      { launchBrowser, closeBrowser },
+      { scrapeListing },
+      { scrapeDetails },
+      { getCategory },
+    ] = await Promise.all([
+      import('../src/browser/launcher.js'),
+      import('../src/services/listingScraper.js'),
+      import('../src/services/detailScraper.js'),
+      import('../src/config/categories.js'),
+    ]);
 
+    const category = getCategory('hanime');
     const browser = await launchBrowser();
     let listing;
     let details;
     try {
-      listing = await scrapeListing(browser);
-      details = await scrapeDetails(browser, listing);
+      listing = await scrapeListing(browser, category);
+      details = await scrapeDetails(browser, category, listing);
     } finally {
       await closeBrowser(browser);
     }
