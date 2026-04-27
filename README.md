@@ -154,6 +154,8 @@ Available variables:
 | `NK_LOG_LEVEL` | `info` | One of `debug`, `info`, `warn`, `error`. |
 | `NK_LOG_COLOR` | _(auto)_ | `auto` (default), `0`/`false` to disable, `1`/`true` for 16-colour ANSI, `2` for 256-colour, `3` for truecolor. The logger forces level `1` on Windows TTYs because chalk's auto-detection misfires inside PowerShell. `FORCE_COLOR=1` works as a fallback. File logs are always plain text. |
 | `NK_AUTO_DETAIL` | _(unset)_ | `yes` / `no` to skip the interactive Y/N prompt between phases. Unset → interactive prompt (or auto-`no` when stdin is not a TTY). |
+| `NK_RESUME` | _(unset)_ | Pre-answer the resume prompt: `yes` / `no` / `cancel`. Unset → interactive prompt (or `cancel` when stdin is not a TTY). |
+| `NK_RESUME_OVERWRITE` | _(unset)_ | Pre-answer the destructive overwrite prompt: `yes` / `no` / `cancel`. Unset → interactive prompt (or `cancel` when stdin is not a TTY). |
 | `NK_OUTPUT_DIR` | `output` | Where `hanimeLists.json` / `hanimeDetails.json` are written. |
 | `NK_LOGS_DIR` | `logs` | Where the daily logger writes log files. |
 | `NK_USER_DATA_DIR` | `.browser_data` | Persistent Puppeteer profile directory. |
@@ -177,8 +179,76 @@ File names follow the pattern `<categoryKey>Lists.json` /
 | `scrape:jav` | `output/javLists.json` | `output/javDetails.json` |
 | `scrape:hanimeindex` | `output/hanimeIndex.json` | _(no detail phase)_ |
 
-A `*Details.progress.json` checkpoint file is written next to each
-detail file so an interrupted run resumes seamlessly.
+A `*Details.progress.json` data checkpoint file is written next to each
+detail file (so previously-scraped slugs survive an interrupted run),
+and a small `*.progress.meta.json` file alongside every output captures
+where the loop stopped (`command`, `status`, `lastCompletedIndex`,
+`totalItems`, `outputFile`, `updatedAt`) so the resume prompt can
+continue from the last successful index.
+
+## Resume / Pause Flow
+
+Every scraper command can be safely paused and resumed:
+
+- All checkpoint writes are atomic (`*.tmp` + `fs.rename`), so a SIGINT,
+  crash or kill never leaves a half-written file.
+- A reusable graceful shutdown manager (`src/utils/shutdown.js`)
+  handles `SIGINT`, `SIGTERM`, `SIGHUP`, `SIGBREAK`,
+  `uncaughtException` and `unhandledRejection`. On the first signal it
+  flips a global `AbortSignal`, runs every registered sync handler
+  (atomic JSON flush of partial results + progress meta), then awaits
+  registered async handlers (closing the Puppeteer browser) before
+  exiting. A second signal short-circuits to an immediate exit so the
+  process is never un-killable.
+- A reusable progress manager (`src/utils/progressManager.js`) writes
+  the `*.progress.meta.json` snapshot after every successful loop
+  iteration. The shape matches the spec:
+
+  ```json
+  {
+    "command": "scrape:hanime:detail",
+    "status": "interrupted",
+    "lastCompletedIndex": 123,
+    "totalItems": 500,
+    "outputFile": "/abs/output/hanimeDetails.json",
+    "updatedAt": "2026-04-27T10:03:00.000Z"
+  }
+  ```
+
+  `status` cycles through `running` → `completed` (clean finish) /
+  `interrupted` (signal) / `failed` (uncaught error).
+
+When the CLI starts and finds an unfinished meta whose `command`
+matches the current command, it asks:
+
+```
+An unfinished scraping progress was found. Continue from the last saved index?
+> Yes
+  No
+  Cancel
+```
+
+- **Yes**: resume from `lastCompletedIndex + 1`. Already-completed items
+  are skipped, existing output is preserved.
+- **No**: a destructive-action confirmation follows
+  (`This will overwrite the previously saved progress and output data.
+  Are you sure?`). On Yes, the previous meta + output are archived to a
+  timestamped sibling (`*.archive-<ISO>.json`) and a fresh run starts.
+  On No / Cancel, nothing is overwritten and the program exits cleanly.
+- **Cancel**: exit immediately without modifying any progress or output
+  file.
+
+The prompts are powered by `@inquirer/prompts.select` and respect two
+non-interactive overrides for cron / CI use:
+
+| Variable | Values | Effect |
+| --- | --- | --- |
+| `NK_RESUME` | `yes` / `no` / `cancel` | Pre-answer the resume prompt. |
+| `NK_RESUME_OVERWRITE` | `yes` / `no` / `cancel` | Pre-answer the destructive overwrite prompt. |
+
+When stdin is not a TTY and neither variable is set, both prompts
+default to `cancel` — the safest answer because it never mutates an
+existing progress or output file.
 
 ## Tests
 
