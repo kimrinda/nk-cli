@@ -8,8 +8,15 @@ as a normal browser would.
 
 ## Highlights
 
-- **Puppeteer + stealth** browser context (graceful fallback to vanilla
-  `puppeteer` if `puppeteer-extra` is unavailable).
+- **`rebrowser-puppeteer` + stealth** browser context. The `puppeteer`
+  dependency is aliased to
+  [`rebrowser-puppeteer`](https://www.npmjs.com/package/rebrowser-puppeteer)
+  in `package.json`, which patches the
+  [`Runtime.Enable` CDP leak](https://rebrowser.net/blog/how-to-fix-runtime-enable-cdp-detection-of-puppeteer-playwright-and-other-automation-libraries)
+  exploited by SafeLine WAF, Cloudflare, DataDome and similar
+  anti-bot stacks. `puppeteer-extra-plugin-stealth` is layered on top
+  for the standard `webdriver`/`navigator` fingerprint scrubs, with a
+  graceful fallback to bare `puppeteer` if the plugin is unavailable.
 - ES Module project (`"type": "module"`), 2-space indentation, JSDoc on
   every exported function.
 - Resume-friendly: every page checkpoint is written atomically; SIGINT,
@@ -103,6 +110,11 @@ Available variables:
 | `NK_RETRY_BASE_DELAY_MS` | `2500` | Base backoff delay (doubled each retry). |
 | `NK_POLITE_DELAY_MS` | `800` | Pause between successful requests. |
 | `NK_LOG_LEVEL` | `info` | One of `debug`, `info`, `warn`, `error`. |
+| `NK_CHROME_EXECUTABLE_PATH` | _(unset)_ | Path to a real Chrome/Chromium binary. Bundled Chromium has fingerprint quirks; a real Chrome is harder for WAFs to flag. |
+| `NK_CHROME_CHANNEL` | _(unset)_ | Puppeteer browser channel hint (e.g. `chrome`). |
+| `REBROWSER_PATCHES_RUNTIME_FIX_MODE` | `addBinding` | rebrowser-patches `Runtime.Enable` fix mode. Other values: `alwaysIsolated`, `0` (disabled). |
+| `REBROWSER_PATCHES_SOURCE_URL` | `app.js` | Replace the telltale `pptr:` script URL on injected sources. |
+| `REBROWSER_PATCHES_UTILITY_WORLD_NAME` | `1` | Generic name for the Puppeteer utility world. |
 
 ## Outputs
 

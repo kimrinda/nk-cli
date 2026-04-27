@@ -59,6 +59,8 @@ function boolEnv(value, fallback) {
  * @property {number} browser.viewportWidth Default viewport width.
  * @property {number} browser.viewportHeight Default viewport height.
  * @property {number} browser.navigationTimeoutMs Default navigation timeout.
+ * @property {string|null} browser.executablePath Optional path to a real Chrome/Chromium binary.
+ * @property {string} browser.channel Puppeteer browser channel hint (e.g. "chrome").
  * @property {object} scrape Behavioural tuning for scrape loops.
  * @property {number} scrape.maxListingPages Hard cap on listing pages.
  * @property {number} scrape.maxDetailItems Hard cap on detail pages (0 = no cap).
@@ -93,6 +95,8 @@ export const config = Object.freeze({
     viewportWidth: intEnv(process.env.NK_VIEWPORT_WIDTH, 1366),
     viewportHeight: intEnv(process.env.NK_VIEWPORT_HEIGHT, 768),
     navigationTimeoutMs: intEnv(process.env.NK_NAV_TIMEOUT_MS, 60_000),
+    executablePath: process.env.NK_CHROME_EXECUTABLE_PATH ?? null,
+    channel: process.env.NK_CHROME_CHANNEL ?? '',
   }),
   scrape: Object.freeze({
     maxListingPages: intEnv(process.env.NK_MAX_LIST_PAGES, 9999),
