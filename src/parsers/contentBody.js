@@ -26,109 +26,161 @@
  * @returns {ContentBody} Parsed content body. Empty fields when not present.
  */
 export function getContentBody() {
-  /** @type {ContentBody} */
-  const data = {
-    title: '',
-    synopsis: '',
-    genre: [],
-    producers: [],
-    duration: '',
-    size: {},
-    note: '',
-    views: '',
-    uploaded: '',
-  };
+  const el = document.querySelector(".konten");
 
-  const el = document.querySelector('.konten');
-  if (el) {
-    const rows = [...el.querySelectorAll('p,h1,h2,h3,h4,h5,h6')]
-      .map((node) =>
-        (node.textContent ?? '')
-          .replace(/\u00a0/g, ' ')
-          .replace(/\s+/g, ' ')
-          .trim(),
-      )
+  const data = {};
+
+  const cleanText = (value) =>
+    (value || "")
+      .replace(/\u00a0/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+
+  const splitList = (value) =>
+    cleanText(value)
+      .replace(/\.$/, "")
+      .split(",")
+      .map((v) => cleanText(v))
       .filter(Boolean);
 
-    for (const row of rows) {
-      const lower = row.toLowerCase();
+  const setIfValue = (key, value) => {
+    if (Array.isArray(value)) {
+      if (value.length) data[key] = value;
+      return;
+    }
 
-      if (/^(judul|title)\s*:/.test(lower)) {
-        data.title = row.replace(/^(judul|title)\s*:/i, '').trim();
-        continue;
-      }
+    if (value && Object.keys(value).length !== 0) {
+      data[key] = value;
+    }
+  };
 
-      if (/^sinopsis/.test(lower)) continue;
+  const parseSize = (row) => {
+    const result = {};
 
-      if (
-        !data.synopsis &&
-        row.length > 80 &&
-        !/^(genre|producer|producers|duration|durasi|ukuran|size|catatan|judul)/i.test(
-          row,
-        )
-      ) {
-        data.synopsis = row.trim();
-        continue;
-      }
+    const matches = [
+      ...row.matchAll(/(\d{3,4}\s*P)\s*:\s*([\d.,]+\s*[a-z]+)/gi),
+    ];
 
-      if (/^(producer|producers)\s*:/.test(lower)) {
-        data.producers = row
-          .replace(/^(producer|producers)\s*:/i, '')
-          .split(',')
-          .map((v) => v.trim())
-          .filter(Boolean);
-        continue;
-      }
+    matches.forEach((m) => {
+      const key = m[1].replace(/\s+/g, "").toUpperCase();
+      result[key] = cleanText(m[2]);
+    });
 
-      if (/^genre\s*:/.test(lower)) {
-        data.genre = row
-          .replace(/^genre\s*:/i, '')
-          .replace(/\.$/, '')
-          .split(',')
-          .map((v) => v.trim())
-          .filter(Boolean);
-        continue;
-      }
+    return result;
+  };
 
-      if (/^(duration|durasi)\s*:/.test(lower)) {
-        data.duration = row.replace(/^(duration|durasi)\s*:/i, '').trim();
-        continue;
-      }
+  const rows = [...el.querySelectorAll("p,h1,h2,h3,h4,h5,h6")]
+    .map((node) => cleanText(node.textContent))
+    .filter(Boolean);
 
-      if (/^(size|ukuran)\s*:/.test(lower)) {
-        const clean = row.replace(/^(size|ukuran)\s*:/i, '').trim();
-        const matches = [
-          ...clean.matchAll(/(\d{3,4}P)\s*:\s*([\d.,]+\s*[a-z]+)/gi),
-        ];
-        matches.forEach((m) => {
-          data.size[m[1].toUpperCase()] = m[2].trim();
-        });
-        continue;
-      }
+  for (const row of rows) {
+    const lower = row.toLowerCase();
 
-      if (/^catatan\s*:/.test(lower)) {
-        data.note = row.replace(/^catatan\s*:/i, '').trim();
-      }
+    // title
+    if (/^(judul|title)\s*:/.test(lower)) {
+      setIfValue("title", row.replace(/^(judul|title)\s*:/i, ""));
+      continue;
+    }
+
+    // original title (support space before colon)
+    if (/^original title\s*:/.test(lower)) {
+      setIfValue("originalTitle", row.replace(/^original title\s*:/i, ""));
+      continue;
+    }
+
+    // nuclear code
+    if (/^nuclear code\s*:/.test(lower)) {
+      setIfValue("nuclearCode", row.replace(/^nuclear code\s*:/i, ""));
+      continue;
+    }
+
+    // parody
+    if (/^parody\s*:/.test(lower)) {
+      setIfValue("parody", splitList(row.replace(/^parody\s*:/i, "")));
+      continue;
+    }
+
+    // actress
+    if (/^(actress|actor|actors)\s*:/.test(lower)) {
+      setIfValue(
+        "actress",
+        splitList(row.replace(/^(actress|actor|actors)\s*:/i, "")),
+      );
+      continue;
+    }
+
+    // skip sinopsis label
+    if (/^sinopsis/.test(lower)) {
+      continue;
+    }
+
+    // auto synopsis
+    if (
+      !data.synopsis &&
+      row.length > 80 &&
+      !/^(genre|producer|producers|produser|duration|durasi|ukuran|size|catatan|judul|title|original title|nuclear code|actress|actor|actors|parody)\s*:/i.test(
+        row,
+      )
+    ) {
+      setIfValue("synopsis", row);
+      continue;
+    }
+
+    // producers
+    if (/^(producer|producers|produser)\s*:/.test(lower)) {
+      setIfValue(
+        "producers",
+        splitList(row.replace(/^(producer|producers|produser)\s*:/i, "")),
+      );
+      continue;
+    }
+
+    // genre
+    if (/^genre\s*:/.test(lower)) {
+      setIfValue("genre", splitList(row.replace(/^genre\s*:/i, "")));
+      continue;
+    }
+
+    // duration
+    if (/^(duration|durasi)\s*:/.test(lower)) {
+      setIfValue("duration", row.replace(/^(duration|durasi)\s*:/i, ""));
+      continue;
+    }
+
+    // size
+    if (/^(size|ukuran)\s*:/.test(lower)) {
+      setIfValue("size", parseSize(row));
+      continue;
+    }
+
+    // note
+    if (/^catatan\s*:/.test(lower)) {
+      setIfValue("note", row.replace(/^catatan\s*:/i, ""));
+      continue;
     }
   }
 
-  const headerTitle = document
-    .querySelector('.nk-post-header > h1')
-    ?.textContent?.trim();
-  if (headerTitle) data.title = headerTitle;
+  // fallback title from page header
+  const pageTitle = cleanText(
+    document.querySelector(".nk-post-header > h1")?.textContent,
+  );
 
-  const headerMeta = document.querySelector('.nk-post-header-meta');
-  if (headerMeta) {
-    const visibility = headerMeta.querySelector('span[class*="visibility"]');
-    if (visibility?.nextSibling?.textContent) {
-      data.views = visibility.nextSibling.textContent.trim();
-    }
+  if (pageTitle) data.title = pageTitle;
 
-    const calendar = headerMeta.querySelector('span[class*="calendar"]');
-    if (calendar?.nextSibling?.textContent) {
-      data.uploaded = calendar.nextSibling.textContent.trim();
-    }
-  }
+  const views = cleanText(
+    document
+      .querySelector(".nk-post-header-meta")
+      ?.querySelector('span[class*="visibility"]')?.nextSibling?.textContent,
+  );
+
+  const uploaded = cleanText(
+    document
+      .querySelector(".nk-post-header-meta")
+      ?.querySelector('span[class*="calendar"]')?.nextSibling?.textContent,
+  );
+
+  if (views) data.views = views;
+  if (uploaded) data.uploaded = uploaded;
 
   return data;
 }
