@@ -77,7 +77,16 @@ node main.js --only=detail    # only the per-slug detail extraction
 
 ## Configuration
 
-Every value can be overridden via environment variables:
+Every value can be overridden via environment variables. The CLI loads a
+project-local `.env` file automatically at startup (powered by
+[`dotenv`](https://www.npmjs.com/package/dotenv)). To customise a run,
+copy the example file and edit it:
+
+```bash
+cp .env.example .env
+```
+
+Available variables:
 
 | Variable | Default | Meaning |
 | --- | --- | --- |

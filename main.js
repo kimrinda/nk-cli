@@ -12,6 +12,9 @@
  *   node main.js --only=detail  # details only (uses existing list file)
  */
 
+// Load `.env` (if present) before any other module reads `process.env`.
+import 'dotenv/config';
+
 import { config } from './src/config/index.js';
 import { closeBrowser, launchBrowser } from './src/browser/launcher.js';
 import { scrapeListing } from './src/services/listingScraper.js';
