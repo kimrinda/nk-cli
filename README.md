@@ -156,7 +156,7 @@ Available variables:
 | `NK_AUTO_DETAIL` | _(unset)_ | `yes` / `no` to skip the interactive Y/N prompt between phases. Unset → interactive prompt (or auto-`no` when stdin is not a TTY). |
 | `NK_RESUME` | _(unset)_ | Pre-answer the resume prompt: `yes` / `no` / `cancel`. Unset → interactive prompt (or `cancel` when stdin is not a TTY). |
 | `NK_RESUME_OVERWRITE` | _(unset)_ | Pre-answer the destructive overwrite prompt: `yes` / `no` / `cancel`. Unset → interactive prompt (or `cancel` when stdin is not a TTY). |
-| `NK_OUTPUT_DIR` | `output` | Where `hanimeLists.json` / `hanimeDetails.json` are written. |
+| `NK_OUTPUT_DIR` | `output` | Where listing JSON files and the per-prefix detail trees (`details/<category>/`) are written. |
 | `NK_LOGS_DIR` | `logs` | Where the daily logger writes log files. |
 | `NK_USER_DATA_DIR` | `.browser_data` | Persistent Puppeteer profile directory. |
 | `NK_CHROME_EXECUTABLE_PATH` | _(unset)_ | Path to a real Chrome/Chromium binary. Bundled Chromium has fingerprint quirks; a real Chrome is harder for WAFs to flag. |
@@ -167,24 +167,89 @@ Available variables:
 
 ## Outputs
 
-File names follow the pattern `<categoryKey>Lists.json` /
-`<categoryKey>Details.json`:
+Listing files use the pattern `<categoryKey>Lists.json`. Detail output
+is split into a directory of small per-prefix bucket files plus a
+manifest (no more 80 000-line monoliths) so each file stays
+manageable, diff-friendly and resume-safe:
 
-| Command | Listing file | Detail file |
+| Command | Listing file | Detail directory |
 | --- | --- | --- |
-| `scrape:hanime` | `output/hanimeLists.json` | `output/hanimeDetails.json` |
-| `scrape:2d-animation` | `output/2dAnimationLists.json` | `output/2dAnimationDetails.json` |
-| `scrape:3d-hentai` | `output/3dHentaiLists.json` | `output/3dHentaiDetails.json` |
-| `scrape:jav-cosplay` | `output/javCosplayLists.json` | `output/javCosplayDetails.json` |
-| `scrape:jav` | `output/javLists.json` | `output/javDetails.json` |
+| `scrape:hanime` | `output/hanimeLists.json` | `output/details/hanime/` |
+| `scrape:2d-animation` | `output/2dAnimationLists.json` | `output/details/2d-animation/` |
+| `scrape:3d-hentai` | `output/3dHentaiLists.json` | `output/details/3d-hentai/` |
+| `scrape:jav-cosplay` | `output/javCosplayLists.json` | `output/details/jav-cosplay/` |
+| `scrape:jav` | `output/javLists.json` | `output/details/jav/` |
 | `scrape:hanimeindex` | `output/hanimeIndex.json` | _(no detail phase)_ |
 
-A `*Details.progress.json` data checkpoint file is written next to each
-detail file (so previously-scraped slugs survive an interrupted run),
-and a small `*.progress.meta.json` file alongside every output captures
-where the loop stopped (`command`, `status`, `lastCompletedIndex`,
-`totalItems`, `outputFile`, `updatedAt`) so the resume prompt can
-continue from the last successful index.
+A `*.progress.meta.json` file alongside every output captures where the
+loop stopped (`command`, `status`, `lastCompletedIndex`, `totalItems`,
+`outputFile`, `updatedAt`) so the resume prompt can continue from the
+last successful index.
+
+### Per-prefix detail layout
+
+For each detail-producing category the scraper writes one bucket file
+per title prefix plus a manifest:
+
+```
+output/details/hanime/
+  hanimeDetails.manifest.json          ← index of every bucket
+  hanimeDetails_A.json                 ← titles starting with 'A' (or 'a')
+  hanimeDetails_B.json
+  hanimeDetails_0-9.json               ← every digit collapses here
+  hanimeDetails_symbol-bracket-open.json   ← '[Foo]' titles
+  hanimeDetails_symbol-hash.json           ← '#Foo' titles
+  hanimeDetails_symbol-other.json          ← non-ASCII / emoji / unmapped
+  hanimeDetails_symbol-empty.json          ← blank/whitespace titles
+```
+
+**Bucket key rules** (see `src/storage/detailStorage.js`):
+
+- ASCII letters fold to uppercase: `'Akari Adventure'` → bucket `A`,
+  `'bible black'` → bucket `B`.
+- ASCII digits collapse into a single bucket: `'3D Wonder'` → `0-9`.
+- Punctuation/whitespace map to a stable, Windows-safe alias:
+  `'['` → `symbol-bracket-open`, `'#'` → `symbol-hash`, `'('` →
+  `symbol-paren-open`, etc. Aliases never contain reserved
+  characters (`\ / : * ? " < > |`) and never collide with reserved
+  Windows base names (`CON`, `PRN`, `LPT1`, …).
+- Anything else (Cyrillic, Japanese, emoji, …) → `symbol-other`.
+- Empty / whitespace-only titles → `symbol-empty`.
+
+**Manifest shape** (`<filenamePrefix>.manifest.json`):
+
+```json
+{
+  "target": "hanime",
+  "filenamePrefix": "hanimeDetails",
+  "totalItems": 450,
+  "groups": {
+    "A": { "file": "hanimeDetails_A.json", "count": 21 },
+    "0-9": { "file": "hanimeDetails_0-9.json", "count": 12 },
+    "symbol-bracket-open": {
+      "file": "hanimeDetails_symbol-bracket-open.json",
+      "count": 8
+    }
+  },
+  "updatedAt": "2026-04-27T10:03:00.000Z"
+}
+```
+
+Every write goes through the standard atomic helper (`*.tmp` +
+`fs.rename`) and the manifest is rewritten after every successful
+upsert so the on-disk snapshot is always self-describing.
+
+**Migration from the old monolithic dump**: if a legacy single-file
+`output/<categoryKey>Details.json` exists, the next detail run loads
+it, distributes every record into the new bucket layout, and renames
+the legacy file to `*.legacy-<ISO>.json` so subsequent runs do not
+re-import it.
+
+**Reading detail data programmatically**: use
+`loadAllDetailsForCategory(category)` from
+`src/storage/detailStorage.js` to flatten every bucket back into a
+single array (uses the manifest where possible, falls back to
+bucket-file discovery).
 
 ## Resume / Pause Flow
 
@@ -265,8 +330,10 @@ temp directory, so it does not touch the real `output/` JSON files.
 It asserts that:
 
 - `output/hanimeLists.json` contains **at least 10** listing entries.
-- `output/hanimeDetails.json` contains **at least 10** detail records,
-  each merging the parsed `content`, `player` and `downloads` blocks.
+- `output/details/hanime/hanimeDetails.manifest.json` lists at least 10
+  records across its bucket files, each merging the parsed `content`,
+  `player` and `downloads` blocks. Every record lives in the bucket
+  file matching its title prefix (see the per-prefix layout above).
 
 Fixtures live under `test/fixtures/`. To validate a parser change
 against a real captured page, drop the page's HTML into a fixture and

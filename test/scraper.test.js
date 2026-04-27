@@ -66,11 +66,13 @@ test(
       { scrapeListing },
       { scrapeDetails },
       { getCategory },
+      { loadAllDetailsForCategory, bucketKeyForTitle },
     ] = await Promise.all([
       import('../src/browser/launcher.js'),
       import('../src/services/listingScraper.js'),
       import('../src/services/detailScraper.js'),
       import('../src/config/categories.js'),
+      import('../src/storage/detailStorage.js'),
     ]);
 
     const category = getCategory('hanime');
@@ -132,18 +134,45 @@ test(
     });
 
     await t.test(
-      'output/hanimeDetails.json on disk contains >=10 records',
+      'manifest + per-prefix bucket files on disk contain >=10 records',
       async () => {
-        const raw = await readFile(
-          path.join(outputDir, 'hanimeDetails.json'),
+        const manifestRaw = await readFile(
+          path.join(outputDir, 'details', 'hanime', 'hanimeDetails.manifest.json'),
           'utf8',
         );
-        const onDisk = JSON.parse(raw);
-        assert.ok(Array.isArray(onDisk));
+        const manifest = JSON.parse(manifestRaw);
+        assert.equal(manifest.target, 'hanime');
+        assert.equal(manifest.filenamePrefix, 'hanimeDetails');
         assert.ok(
-          onDisk.length >= MIN_DETAIL_ITEMS,
-          `expected >=${MIN_DETAIL_ITEMS} detail records on disk, got ${onDisk.length}`,
+          manifest.totalItems >= MIN_DETAIL_ITEMS,
+          `manifest.totalItems should be >= ${MIN_DETAIL_ITEMS}, got ${manifest.totalItems}`,
         );
+
+        // Every group must point at a real bucket file with the
+        // matching record count and only records from its bucket.
+        let aggregated = 0;
+        for (const [bucket, group] of Object.entries(manifest.groups)) {
+          const bucketRaw = await readFile(
+            path.join(outputDir, 'details', 'hanime', group.file),
+            'utf8',
+          );
+          const bucketRecords = JSON.parse(bucketRaw);
+          assert.ok(Array.isArray(bucketRecords));
+          assert.equal(bucketRecords.length, group.count);
+          for (const record of bucketRecords) {
+            assert.equal(
+              bucketKeyForTitle(record.listing.title),
+              bucket,
+              'every record must live in the bucket its title maps to',
+            );
+          }
+          aggregated += bucketRecords.length;
+        }
+        assert.equal(aggregated, manifest.totalItems);
+
+        // Helper round-trip flatten matches the manifest count.
+        const flattened = await loadAllDetailsForCategory(category);
+        assert.equal(flattened.length, manifest.totalItems);
       },
     );
   },
