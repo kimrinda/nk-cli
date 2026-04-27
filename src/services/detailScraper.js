@@ -19,13 +19,13 @@ import { parseNkPlayer } from '../parsers/nkPlayer.js';
 import { getDownloadSection } from '../parsers/downloadSection.js';
 import { logger } from '../utils/logger.js';
 import { withRetry, sleep } from '../utils/retry.js';
-import { readJson, writeJson, writeJsonSync } from '../utils/storage.js';
 import {
   getAbortSignal,
   isShutdownInProgress,
   onShutdown,
 } from '../utils/shutdown.js';
 import { ProgressManager } from '../utils/progressManager.js';
+import { createDetailStoreForCategory } from '../storage/detailStorage.js';
 
 /**
  * @typedef {import('../parsers/pageItems.js').ListingItem} ListingItem
@@ -113,8 +113,11 @@ async function scrapeOne(page, category, item) {
 
 /**
  * Scrape every detail page referenced by `items`, resuming from any
- * previously-saved progress checkpoint. Final merged results land in
- * the category's `detailPath` (e.g. `output/hanimeDetails.json`).
+ * previously-saved progress checkpoint. Final merged results are split
+ * into per-prefix bucket files under `category.detailDir`
+ * (e.g. `output/details/hanime/hanimeDetails_A.json`,
+ * `…/hanimeDetails_0-9.json`, …) and a manifest at
+ * `category.detailManifestPath`.
  *
  * @param {import('puppeteer').Browser} browser Active Puppeteer browser.
  * @param {ResolvedCategory} category Category being processed.
@@ -128,20 +131,18 @@ async function scrapeOne(page, category, item) {
  * @returns {Promise<DetailRecord[]>} Combined details for every requested slug.
  */
 export async function scrapeDetails(browser, category, items, options = {}) {
-  if (!category.detailPath || !category.detailProgressPath) {
+  if (!category.detailDir || !category.detailFilenamePrefix) {
     throw new Error(
       `Category "${category.key}" has no detail output configured`,
     );
   }
-  const detailPath = category.detailPath;
-  const progressPath = category.detailProgressPath;
 
   const startIndex = Math.max(0, options.startIndex ?? 0);
   const progress =
     options.progress ??
     new ProgressManager({
       command: `scrape:${category.key}:detail`,
-      outputFile: detailPath,
+      outputFile: /** @type {string} */ (category.detailManifestPath),
       totalItems: items.length,
     });
   if (!options.progress) {
@@ -152,34 +153,24 @@ export async function scrapeDetails(browser, category, items, options = {}) {
   }
   const abortSignal = getAbortSignal();
 
-  const page = await newConfiguredPage(browser);
-
-  /** @type {DetailRecord[]} */
-  const finalRecords = await readJson(detailPath, []);
-  /** @type {DetailRecord[]} */
-  const progressRecords = await readJson(progressPath, []);
-
-  /** @type {Map<string, DetailRecord>} */
-  const indexed = new Map();
-  for (const record of [...finalRecords, ...progressRecords]) {
-    indexed.set(record.slug, record);
-  }
+  // Materialise (and migrate, if needed) the on-disk per-prefix store.
+  const store = createDetailStoreForCategory(category);
+  await store.load({
+    legacyFile: category.detailPath ?? undefined,
+  });
   logger.info('Loaded existing detail records', {
     category: category.key,
-    count: indexed.size,
+    count: store.size(),
+    buckets: store.bucketKeys().length,
   });
 
-  /**
-   * Persist the in-memory map synchronously. Used by the shutdown hook.
-   *
-   * @returns {void}
-   */
-  const saveSync = () => {
-    const snapshot = [...indexed.values()];
-    writeJsonSync(progressPath, snapshot);
-    writeJsonSync(detailPath, snapshot);
-  };
-  onShutdown(saveSync);
+  // Best-effort flush of every dirty bucket on hard exit. Async upserts
+  // already write atomically, so this is just a safety-net for the
+  // (rare) case where shutdown fires between an in-memory mutation and
+  // its corresponding flush.
+  onShutdown(() => store.flushAllSync());
+
+  const page = await newConfiguredPage(browser);
 
   const cap = config.scrape.maxDetailItems > 0
     ? Math.min(items.length, config.scrape.maxDetailItems)
@@ -200,7 +191,7 @@ export async function scrapeDetails(browser, category, items, options = {}) {
       }
 
       const item = items[i];
-      if (indexed.has(item.slug)) {
+      if (store.has(item.slug)) {
         logger.debug('Skipping already-scraped slug', { slug: item.slug });
         await progress.update({
           lastCompletedIndex: i,
@@ -211,9 +202,8 @@ export async function scrapeDetails(browser, category, items, options = {}) {
 
       try {
         const record = await scrapeOne(page, category, item);
-        indexed.set(record.slug, record);
+        const { bucket } = await store.upsert(record);
         processed += 1;
-        await writeJson(progressPath, [...indexed.values()]);
         await progress.update({
           lastCompletedIndex: i,
           totalItems: cap,
@@ -221,6 +211,7 @@ export async function scrapeDetails(browser, category, items, options = {}) {
         logger.info('Detail scraped', {
           category: category.key,
           slug: item.slug,
+          bucket,
           index: i + 1,
           total: cap,
           processed,
@@ -239,9 +230,8 @@ export async function scrapeDetails(browser, category, items, options = {}) {
     }
     /* eslint-enable no-await-in-loop */
 
-    const merged = [...indexed.values()];
-    await writeJson(detailPath, merged);
-    await writeJson(progressPath, merged);
+    // Final manifest flush so its `updatedAt` reflects the run's end.
+    await store.flushManifest();
 
     if (!isShutdownInProgress()) {
       await progress.markCompleted();
@@ -249,11 +239,12 @@ export async function scrapeDetails(browser, category, items, options = {}) {
 
     logger.info('Detail scrape complete', {
       category: category.key,
-      total: merged.length,
+      total: store.size(),
+      buckets: store.bucketKeys().length,
       processed,
       failed,
     });
-    return merged;
+    return store.flattenAll();
   } catch (error) {
     await progress.markFailed(error);
     throw error;

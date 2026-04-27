@@ -75,14 +75,14 @@ function resolveProgressTarget(action, category) {
       };
     case 'detailByPage':
     case 'detailBySlug': {
-      if (!category.detailPath) {
+      if (!category.detailManifestPath) {
         throw new Error(
           `Category "${category.key}" has no detail output configured`,
         );
       }
       return {
         command: `scrape:${category.key}:detail`,
-        outputFile: category.detailPath,
+        outputFile: category.detailManifestPath,
       };
     }
     default: {
@@ -274,7 +274,7 @@ async function runDetailBySlugAction(browser, category, slug, resume) {
   logger.info('Single detail scrape finished', {
     slug: record.slug,
     url: record.url,
-    file: category.detailPath,
+    manifest: category.detailManifestPath,
   });
 }
 
