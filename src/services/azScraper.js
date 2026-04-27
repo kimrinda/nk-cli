@@ -54,6 +54,21 @@ async function waitForAzDom(page) {
  * Navigate from the homepage to the AZ index landing page by clicking
  * the corresponding menu link.
  *
+ * Sequence (event-driven, never sleeps for the full WAF timeout):
+ *   1. `goto(home, { waitUntil: 'domcontentloaded' })` — returns as soon
+ *      as the homepage HTML is parsed. We deliberately do *not* use
+ *      `networkidle2` here: ad/tracker traffic on the live homepage
+ *      keeps the network busy indefinitely and would otherwise stall
+ *      this step for the full `wafTimeoutMs` (120s) even when the menu
+ *      link is already present in the initial HTML.
+ *   2. `waitForFunction(hasMenuByText, polling: 250)` — polls every
+ *      250ms for the menu link and resumes the moment it appears. The
+ *      WAF-grade timeout is kept as the outer ceiling so a slow WAF
+ *      challenge (which delays the menu-bearing HTML) still has time
+ *      to clear, but the moment the element renders we proceed.
+ *   3. Click + `waitForNavigation('domcontentloaded')` and assert the
+ *      AZ DOM via `waitForAzDom`.
+ *
  * @param {import('puppeteer').Page} page Configured Puppeteer page.
  * @param {ResolvedCategory} category Category descriptor (must have `kind === 'azIndex'`).
  * @returns {Promise<void>} Resolves once the AZ DOM is rendered.
@@ -64,8 +79,8 @@ async function enterAzCategory(page, category) {
     category: category.key,
   });
   await page.goto(config.homeUrl, {
-    waitUntil: 'networkidle2',
-    timeout: config.browser.wafTimeoutMs,
+    waitUntil: 'domcontentloaded',
+    timeout: config.browser.navigationTimeoutMs,
   });
 
   logger.debug('Waiting for menu link', {
@@ -84,7 +99,7 @@ async function enterAzCategory(page, category) {
   await Promise.all([
     page.waitForNavigation({
       waitUntil: 'domcontentloaded',
-      timeout: config.browser.wafTimeoutMs,
+      timeout: config.browser.navigationTimeoutMs,
     }),
     page.evaluate(clickMenuByText, category.menuText),
   ]);

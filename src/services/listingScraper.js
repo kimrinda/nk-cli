@@ -56,13 +56,19 @@ async function waitForListingDom(page) {
 /**
  * Navigate from the homepage to the requested category landing page.
  *
- * Sequence:
- *   1. `goto(home, networkidle2)` — give the SafeLine WAF challenge
- *      time to finish (it auto-redirects to the real homepage once
- *      satisfied).
- *   2. `waitForFunction(hasMenuByText)` until the menu link renders.
- *   3. Click + waitForNavigation onto `/category/<slug>/` and assert
- *      the listing DOM (also via the WAF timeout for safety).
+ * Sequence (event-driven — never sleeps for the full WAF timeout when
+ * the page is already in the DOM):
+ *   1. `goto(home, { waitUntil: 'domcontentloaded' })` — returns the
+ *      moment the homepage HTML is parsed. `networkidle2` is avoided
+ *      here because ad/tracker traffic on the live homepage keeps the
+ *      network busy indefinitely and would otherwise consume the full
+ *      `wafTimeoutMs` budget before we even start polling for the menu.
+ *   2. `waitForFunction(hasMenuByText, polling: 250)` until the menu
+ *      link renders. The WAF-grade timeout is kept as the outer ceiling
+ *      so a slow WAF challenge still has room to clear, but the moment
+ *      the element appears we proceed.
+ *   3. Click + waitForNavigation onto `/category/<slug>/` (using the
+ *      regular navigation timeout) and assert the listing DOM.
  *
  * @param {import('puppeteer').Page} page Configured Puppeteer page.
  * @param {ResolvedCategory} category Target category whose menu link to click.
@@ -71,8 +77,8 @@ async function waitForListingDom(page) {
 async function enterCategory(page, category) {
   logger.info('Opening homepage', { url: config.homeUrl, category: category.key });
   await page.goto(config.homeUrl, {
-    waitUntil: 'networkidle2',
-    timeout: config.browser.wafTimeoutMs,
+    waitUntil: 'domcontentloaded',
+    timeout: config.browser.navigationTimeoutMs,
   });
 
   logger.debug('Waiting for menu link', {
@@ -91,7 +97,7 @@ async function enterCategory(page, category) {
   await Promise.all([
     page.waitForNavigation({
       waitUntil: 'domcontentloaded',
-      timeout: config.browser.wafTimeoutMs,
+      timeout: config.browser.navigationTimeoutMs,
     }),
     page.evaluate(clickMenuByText, category.menuText),
   ]);
