@@ -27,12 +27,12 @@
  */
 export function getContentBody() {
   const el = document.querySelector(".konten");
-
   const data = {};
 
   const cleanText = (value) =>
     (value || "")
       .replace(/\u00a0/g, " ")
+      .replace(/&amp;/g, "&")
       .replace(/\s+/g, " ")
       .trim();
 
@@ -49,7 +49,7 @@ export function getContentBody() {
       return;
     }
 
-    if (value && Object.keys(value).length !== 0) {
+    if (value && (typeof value !== "object" || Object.keys(value).length)) {
       data[key] = value;
     }
   };
@@ -62,8 +62,7 @@ export function getContentBody() {
     ];
 
     matches.forEach((m) => {
-      const key = m[1].replace(/\s+/g, "").toUpperCase();
-      result[key] = cleanText(m[2]);
+      result[m[1].replace(/\s+/g, "").toUpperCase()] = cleanText(m[2]);
     });
 
     return result;
@@ -82,9 +81,15 @@ export function getContentBody() {
       continue;
     }
 
-    // original title (support space before colon)
+    // original title
     if (/^original title\s*:/.test(lower)) {
       setIfValue("originalTitle", row.replace(/^original title\s*:/i, ""));
+      continue;
+    }
+
+    // movie id
+    if (/^movie id\s*:/.test(lower)) {
+      setIfValue("movieId", row.replace(/^movie id\s*:/i, ""));
       continue;
     }
 
@@ -109,6 +114,12 @@ export function getContentBody() {
       continue;
     }
 
+    // artist
+    if (/^artist\s*:/.test(lower)) {
+      setIfValue("artist", splitList(row.replace(/^artist\s*:/i, "")));
+      continue;
+    }
+
     // skip sinopsis label
     if (/^sinopsis/.test(lower)) {
       continue;
@@ -118,7 +129,7 @@ export function getContentBody() {
     if (
       !data.synopsis &&
       row.length > 80 &&
-      !/^(genre|producer|producers|produser|duration|durasi|ukuran|size|catatan|judul|title|original title|nuclear code|actress|actor|actors|parody)\s*:/i.test(
+      !/^(genre|producer|producers|produser|duration|durasi|ukuran|size|catatan|note|judul|title|original title|movie id|nuclear code|actress|actor|actors|artist|parody)\s*:/i.test(
         row,
       )
     ) {
@@ -154,32 +165,35 @@ export function getContentBody() {
     }
 
     // note
-    if (/^catatan\s*:/.test(lower)) {
-      setIfValue("note", row.replace(/^catatan\s*:/i, ""));
+    if (/^(catatan|note)\s*:/.test(lower)) {
+      setIfValue("note", row.replace(/^(catatan|note)\s*:/i, ""));
       continue;
     }
   }
 
-  // fallback title from page header
+  // fallback title from header page
   const pageTitle = cleanText(
     document.querySelector(".nk-post-header > h1")?.textContent,
   );
 
   if (pageTitle) data.title = pageTitle;
 
+  // views
   const views = cleanText(
     document
       .querySelector(".nk-post-header-meta")
       ?.querySelector('span[class*="visibility"]')?.nextSibling?.textContent,
   );
 
+  if (views) data.views = views;
+
+  // uploaded
   const uploaded = cleanText(
     document
       .querySelector(".nk-post-header-meta")
       ?.querySelector('span[class*="calendar"]')?.nextSibling?.textContent,
   );
 
-  if (views) data.views = views;
   if (uploaded) data.uploaded = uploaded;
 
   return data;
