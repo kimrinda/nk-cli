@@ -160,11 +160,20 @@ session. Save the export as `nk-cookies.json` in the project root (or
 override the path via `NK_COOKIE_FILE`). The file is git-ignored.
 
 If a request comes back with a WAF-shaped response (HTTP 468, 403,
-419, 429, or a known challenge body) the CLI prompts you to paste a
-fresh export, persists it to disk, and retries the failed request
-automatically. Set `NK_AUTO_COOKIE_REFRESH=no` to skip the prompt in
-non-interactive shells (the request will then surface the original
-WAF error).
+419, 429, or a known challenge body) the CLI prints a coloured warning
+banner (yellow/red for the failure, cyan for the actionable tips) and
+prompts directly in the terminal:
+
+```
+Paste your cookie here: <paste JSON, press Enter>
+```
+
+The pasted value is parsed (JSON array or `Cookie:` header line),
+persisted atomically to `nk-cookies.json`, and the failed request is
+retried automatically — no external editor is launched. Press Enter
+on an empty line to abort. Set `NK_AUTO_COOKIE_REFRESH=no` to skip the
+prompt in non-interactive shells (the request will then surface the
+original WAF error).
 
 ## Configuration
 
