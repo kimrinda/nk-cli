@@ -36,10 +36,18 @@ yarn-error.log*
 next-env.d.ts
 
 # scraper artifacts
-/output/*.json
+/output/
 !/output/.gitkeep
-/logs/*.log
+/logs/
 !/logs/.gitkeep
+/temp/
+/cache/
+*.tmp
+*.log
 
 # puppeteer browser data
 /.browser_data
+
+# HTTP-mode session cookies (sensitive — never commit)
+/nk-cookies.json
+/nk-cookies.*.json
