@@ -87,6 +87,12 @@ export function getContentBody() {
       continue;
     }
 
+    // japanese title
+    if (/^japanese title\s*:/.test(lower)) {
+      setIfValue("japaneseTitle", row.replace(/^japanese title\s*:/i, ""));
+      continue;
+    }
+
     // movie id
     if (/^movie id\s*:/.test(lower)) {
       setIfValue("movieId", row.replace(/^movie id\s*:/i, ""));
@@ -120,24 +126,7 @@ export function getContentBody() {
       continue;
     }
 
-    // skip sinopsis label
-    if (/^sinopsis/.test(lower)) {
-      continue;
-    }
-
-    // auto synopsis
-    if (
-      !data.synopsis &&
-      row.length > 80 &&
-      !/^(genre|producer|producers|produser|duration|durasi|ukuran|size|catatan|note|judul|title|original title|movie id|nuclear code|actress|actor|actors|artist|parody)\s*:/i.test(
-        row,
-      )
-    ) {
-      setIfValue("synopsis", row);
-      continue;
-    }
-
-    // producers
+    // producer
     if (/^(producer|producers|produser)\s*:/.test(lower)) {
       setIfValue(
         "producers",
@@ -164,14 +153,30 @@ export function getContentBody() {
       continue;
     }
 
-    // note
+    // note / catatan
     if (/^(catatan|note)\s*:/.test(lower)) {
       setIfValue("note", row.replace(/^(catatan|note)\s*:/i, ""));
       continue;
     }
+
+    // skip label sinopsis
+    if (/^sinopsis\s*:?$/.test(lower)) {
+      continue;
+    }
+
+    // auto synopsis fallback
+    if (
+      !data.synopsis &&
+      row.length > 80 &&
+      !/^(genre|producer|producers|produser|duration|durasi|ukuran|size|catatan|note|judul|title|original title|japanese title|movie id|nuclear code|actress|actor|actors|artist|parody)\s*:/i.test(
+        row,
+      )
+    ) {
+      setIfValue("synopsis", row);
+    }
   }
 
-  // fallback title from header page
+  // fallback title page header
   const pageTitle = cleanText(
     document.querySelector(".nk-post-header > h1")?.textContent,
   );
