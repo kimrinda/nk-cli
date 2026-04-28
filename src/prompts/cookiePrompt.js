@@ -1,12 +1,23 @@
 /**
- * @file Inquirer prompt that asks the user to paste a fresh
- * Cookie-Editor JSON export when the existing cookies appear expired
- * or rejected by the upstream WAF.
+ * @file Inquirer-driven prompt that asks the user to paste a fresh
+ * Cookie-Editor JSON export directly into the terminal when the
+ * existing cookies appear expired or rejected by the upstream WAF.
+ *
+ * The flow is intentionally a single-line paste:
+ *
+ *   Paste your cookie here: <user pastes JSON> <Enter>
+ *
+ * No external editor is launched. The pasted value is parsed via
+ * {@link parsePastedCookies} (accepts the Cookie-Editor JSON array
+ * format or a raw `Cookie:` header line) and persisted atomically to
+ * `nk-cookies.json` before the caller retries the failing request.
  *
  * Honours `NK_AUTO_COOKIE_REFRESH=no` for non-interactive runs (skip
  * the prompt and let the caller raise the original error). When stdin
  * is not a TTY the prompt is also skipped.
  */
+
+import chalk from 'chalk';
 
 import { logger } from '../utils/logger.js';
 import { parsePastedCookies, writeCookies } from '../http/cookieStore.js';
@@ -16,16 +27,16 @@ import { parsePastedCookies, writeCookies } from '../http/cookieStore.js';
  */
 
 /**
- * Lazy-load `@inquirer/prompts.editor`. Returns `null` when the module
+ * Lazy-load `@inquirer/prompts.input`. Returns `null` when the module
  * is unavailable so callers can fall back gracefully.
  *
  * @returns {Promise<((q: object) => Promise<string>) | null>} Loaded
- *   `editor` function or `null`.
+ *   `input` function or `null`.
  */
-async function loadEditor() {
+async function loadInput() {
   try {
     const mod = await import('@inquirer/prompts');
-    return /** @type {any} */ (mod).editor ?? null;
+    return /** @type {any} */ (mod).input ?? null;
   } catch (error) {
     logger.warn('Inquirer unavailable; cookie refresh prompt will be skipped', {
       error: error instanceof Error ? error.message : String(error),
@@ -47,6 +58,51 @@ function shouldSkipPrompt() {
   if (['no', 'false', '0', 'off'].includes(override)) return true;
   if (!process.stdin.isTTY) return true;
   return false;
+}
+
+/**
+ * Print a coloured, multi-line WAF warning banner directly to stderr
+ * so it is visible immediately above the inquirer prompt regardless of
+ * the active log level. Yellow + red call out the failure, cyan
+ * surfaces the actionable tips.
+ *
+ * @param {string} cookieFilePath Absolute path the new payload will be
+ *   written to.
+ * @param {string} [reason] Optional human-readable reason for the
+ *   prompt (e.g. "Received HTTP 468 from nekopoi.care").
+ * @returns {void}
+ */
+function printWafBanner(cookieFilePath, reason) {
+  const lines = [
+    '',
+    chalk.bold.red('!! WAF / cookie session rejected !!'),
+    chalk.yellow('Cookie/session appears expired or invalid.'),
+    reason ? chalk.yellow(`Reason: ${reason}`) : null,
+    chalk.yellow(
+      'Please paste a fresh Cookie-Editor JSON export to continue.',
+    ),
+    chalk.yellow(`It will be saved to: ${cookieFilePath}`),
+    '',
+    chalk.cyan('Tips:'),
+    chalk.cyan(
+      '  * Open the target site in your browser, log in, then click the',
+    ),
+    chalk.cyan(
+      '    Cookie-Editor extension and choose "Export" -> "JSON".',
+    ),
+    chalk.cyan(
+      '  * Copy the resulting JSON array and paste it on the next line.',
+    ),
+    chalk.cyan(
+      '  * A raw `Cookie:` header value (e.g. "name=value; ...") works too.',
+    ),
+    chalk.cyan('  * Press Enter on an empty line to abort.'),
+    '',
+  ];
+  for (const line of lines) {
+    if (line === null) continue;
+    process.stderr.write(`${line}\n`);
+  }
 }
 
 /**
@@ -74,39 +130,55 @@ export async function promptForFreshCookies(options) {
     return null;
   }
 
-  const editor = await loadEditor();
-  if (!editor) return null;
+  const input = await loadInput();
+  if (!input) return null;
 
-  const banner = [
-    'Cookie/session appears expired or invalid.',
-    reason ? `Reason: ${reason}` : null,
-    `Please paste a fresh cookie JSON export (Cookie-Editor format).`,
-    `It will be saved to: ${cookieFilePath}`,
-    '',
-    'Tips:',
-    '  * Open the target site in your browser, log in, then export the',
-    '    cookies via the Cookie-Editor extension ("Export → JSON").',
-    '  * Save and close the editor when done. Leave it empty to abort.',
-  ]
-    .filter(Boolean)
-    .join('\n');
+  printWafBanner(cookieFilePath, reason);
 
   /** @type {string} */
-  const raw = await editor({
-    message: banner,
-    default: '[]',
-    waitForUseInput: false,
+  const raw = await input({
+    message: chalk.bold.cyan('Paste your cookie here:'),
+    default: '',
+    validate: (value) => {
+      const text = (value || '').trim();
+      if (!text) return true; // empty == abort
+      const parsed = parsePastedCookies(text);
+      if (!parsed || parsed.length === 0) {
+        return (
+          'Could not parse pasted value as Cookie-Editor JSON or a Cookie header. ' +
+          'Paste the full JSON array, or a "name=value; name2=value2" header.'
+        );
+      }
+      return true;
+    },
   });
 
-  const parsed = parsePastedCookies(raw);
+  const trimmed = (raw || '').trim();
+  if (!trimmed) {
+    process.stderr.write(
+      `${chalk.yellow(
+        'Cookie refresh aborted by user — keeping existing cookie file.',
+      )}\n`,
+    );
+    return null;
+  }
+
+  const parsed = parsePastedCookies(trimmed);
   if (!parsed || parsed.length === 0) {
-    logger.warn(
-      'No valid cookies parsed from user input — keeping existing file.',
+    process.stderr.write(
+      `${chalk.red(
+        'No valid cookies parsed from pasted input — keeping existing file.',
+      )}\n`,
     );
     return null;
   }
 
   await writeCookies(parsed, cookieFilePath);
+  process.stderr.write(
+    `${chalk.green(
+      `Saved ${parsed.length} cookie${parsed.length === 1 ? '' : 's'} to ${cookieFilePath}. Retrying request...`,
+    )}\n`,
+  );
   logger.info('Saved fresh cookies to disk', {
     cookieFilePath,
     count: parsed.length,
