@@ -2,18 +2,15 @@
 /**
  * @file Entry point for the nk-cli scraper.
  *
- * Dispatches the user-supplied CLI command to the matching scraper
- * pipeline and installs graceful shutdown hooks.
+ * Dispatches the user-supplied CLI action to the matching scraper
+ * pipeline (browser or HTTP) and installs graceful shutdown hooks.
  *
  * Usage:
- *   node main.js scrape:hanime
- *   node main.js scrape:2d-animation
- *   node main.js scrape:3d-hentai
- *   node main.js scrape:jav-cosplay
- *   node main.js scrape:jav
- *   node main.js scrape:hanimeindex
- *   node main.js scrape:info --slug <slug> [--category <key>]
- *   node main.js scrape:info --page <category-key>
+ *   node main.js --scrape hanime --method cli
+ *   node main.js --scrape hanime --method browser
+ *   node main.js --scrape hanimeinfo --slug my-slug --method cli
+ *   node main.js --scrape hanimeindex --method browser
+ *   node main.js --scrape info --category hanime --page hanime --method cli
  */
 
 // Load `.env` (if present) before any other module reads `process.env`.
@@ -31,6 +28,10 @@ import { config } from './src/config/index.js';
 import { scrapeDetails } from './src/services/detailScraper.js';
 import { scrapeListing } from './src/services/listingScraper.js';
 import { scrapeAzIndex } from './src/services/azScraper.js';
+import { scrapeListingHttp } from './src/http/listingScraper.js';
+import { scrapeDetailsHttp } from './src/http/detailScraper.js';
+import { scrapeAzIndexHttp } from './src/http/azScraper.js';
+import { createSession } from './src/http/session.js';
 import { logger } from './src/utils/logger.js';
 import { readJson } from './src/utils/storage.js';
 import {
@@ -46,15 +47,13 @@ import {
 
 /**
  * @typedef {import('./src/cli/parser.js').CliAction} CliAction
+ * @typedef {import('./src/cli/parser.js').ScrapeMethod} ScrapeMethod
  * @typedef {import('./src/parsers/pageItems.js').ListingItem} ListingItem
+ * @typedef {import('./src/http/session.js').HttpSession} HttpSession
  */
 
 /**
  * Resolve the canonical (command, output file) pair for a CLI action.
- *
- * The pair drives the resume-progress meta lookup so an interrupted
- * `scrape:hanime` only matches against another `scrape:hanime` run
- * later — never an unrelated category's leftovers.
  *
  * @param {CliAction} action Parsed CLI intent.
  * @param {ReturnType<typeof getCategory>} category Resolved category.
@@ -118,7 +117,6 @@ async function negotiateAndPrepareProgress(action, category) {
       command: target.command,
     });
     await requestShutdown('user-cancel', 0);
-    // Should never reach here.
     throw new Error('cancelled');
   }
 
@@ -144,28 +142,28 @@ async function negotiateAndPrepareProgress(action, category) {
   return { progress, startIndex: decision.startIndex };
 }
 
+/* ------------------------------------------------------------------ */
+/*  Browser-mode action runners                                       */
+/* ------------------------------------------------------------------ */
+
 /**
- * Run a `listing` action: scrape the listing pages and (when running
- * interactively or `NK_AUTO_DETAIL=yes`) follow up with the detail
- * phase after asking the user for confirmation.
+ * Run a `listing` action via Puppeteer.
  *
  * @param {import('puppeteer').Browser} browser Active Puppeteer browser.
  * @param {ReturnType<typeof getCategory>} category Resolved category.
- * @param {{ progress: ProgressManager, startIndex: number }} resume
- *   Listing-phase progress + resume index.
+ * @param {{ progress: ProgressManager, startIndex: number }} resume Resume state.
  * @returns {Promise<void>} Resolves when the action is fully done.
  */
-async function runListingAction(browser, category, resume) {
+async function runListingActionBrowser(browser, category, resume) {
   const items = await scrapeListing(browser, category, {
     progress: resume.progress,
     startPage: resume.startIndex + 1,
   });
-  logger.info('Listing phase finished', {
+  logger.info('Listing phase finished (browser)', {
     category: category.key,
     items: items.length,
     file: category.listingPath,
   });
-
   if (isShutdownInProgress()) return;
 
   const proceed = await confirmDetailScrape({
@@ -185,11 +183,8 @@ async function runListingAction(browser, category, resume) {
     return;
   }
 
-  // Run a separate resume negotiation for the follow-on detail phase
-  // so its meta file (e.g. `<key>Details.progress.meta.json`) gets a
-  // proper Yes/No/Cancel handshake of its own.
   const detailResume = await negotiateAndPrepareProgress(
-    { type: 'detailByPage', categoryKey: category.key },
+    { type: 'detailByPage', categoryKey: category.key, method: 'browser' },
     category,
   );
   await scrapeDetails(browser, category, items, {
@@ -199,19 +194,18 @@ async function runListingAction(browser, category, resume) {
 }
 
 /**
- * Run an `azIndex` action (e.g. `scrape:hanimeindex`).
+ * Run an `azIndex` action via Puppeteer.
  *
  * @param {import('puppeteer').Browser} browser Active Puppeteer browser.
  * @param {ReturnType<typeof getCategory>} category Resolved category.
- * @param {{ progress: ProgressManager, startIndex: number }} resume
- *   AZ-phase progress + resume index.
- * @returns {Promise<void>} Resolves when the index has been written.
+ * @param {{ progress: ProgressManager, startIndex: number }} resume Resume state.
+ * @returns {Promise<void>} Resolves once the index has been written.
  */
-async function runAzAction(browser, category, resume) {
+async function runAzActionBrowser(browser, category, resume) {
   const result = await scrapeAzIndex(browser, category, {
     progress: resume.progress,
   });
-  logger.info('AZ index phase finished', {
+  logger.info('AZ index phase finished (browser)', {
     category: category.key,
     groups: result.totalGroups,
     items: result.totalItems,
@@ -220,17 +214,14 @@ async function runAzAction(browser, category, resume) {
 }
 
 /**
- * Run a `detailByPage` action (`scrape:info --page <category>`): load
- * a previously-saved listing JSON for the category and run the detail
- * phase against its entries.
+ * Run a `detailByPage` action via Puppeteer.
  *
  * @param {import('puppeteer').Browser} browser Active Puppeteer browser.
  * @param {ReturnType<typeof getCategory>} category Resolved category.
- * @param {{ progress: ProgressManager, startIndex: number }} resume
- *   Detail-phase progress + resume index.
+ * @param {{ progress: ProgressManager, startIndex: number }} resume Resume state.
  * @returns {Promise<void>} Resolves when the detail phase finishes.
  */
-async function runDetailByPageAction(browser, category, resume) {
+async function runDetailByPageActionBrowser(browser, category, resume) {
   /** @type {ListingItem[]} */
   const items = await readJson(category.listingPath, []);
   logger.info('Loaded listing from disk', {
@@ -252,16 +243,15 @@ async function runDetailByPageAction(browser, category, resume) {
 }
 
 /**
- * Run a `detailBySlug` action (`scrape:info --slug <slug>`).
+ * Run a `detailBySlug` action via Puppeteer.
  *
  * @param {import('puppeteer').Browser} browser Active Puppeteer browser.
  * @param {ReturnType<typeof getCategory>} category Resolved category context.
  * @param {string} slug Slug to scrape.
- * @param {{ progress: ProgressManager, startIndex: number }} resume
- *   Detail-phase progress + resume index.
- * @returns {Promise<void>} Resolves once the single detail has been written.
+ * @param {{ progress: ProgressManager, startIndex: number }} resume Resume state.
+ * @returns {Promise<void>} Resolves once the detail has been written.
  */
-async function runDetailBySlugAction(browser, category, slug, resume) {
+async function runDetailBySlugActionBrowser(browser, category, slug, resume) {
   const items = [{ slug, title: '', thumbnail: '', url: '' }];
   const records = await scrapeDetails(browser, category, items, {
     progress: resume.progress,
@@ -271,15 +261,147 @@ async function runDetailBySlugAction(browser, category, slug, resume) {
   if (!record) {
     throw new Error(`scrapeSingleDetail: no record produced for ${slug}`);
   }
-  logger.info('Single detail scrape finished', {
+  logger.info('Single detail scrape finished (browser)', {
     slug: record.slug,
     url: record.url,
     manifest: category.detailManifestPath,
   });
 }
 
+/* ------------------------------------------------------------------ */
+/*  HTTP-mode action runners                                          */
+/* ------------------------------------------------------------------ */
+
 /**
- * Dispatch the resolved CLI action against a freshly-launched browser.
+ * Run a `listing` action over HTTP (axios + cheerio).
+ *
+ * @param {HttpSession} session Initialised HTTP session.
+ * @param {ReturnType<typeof getCategory>} category Resolved category.
+ * @param {{ progress: ProgressManager, startIndex: number }} resume Resume state.
+ * @returns {Promise<void>} Resolves when the action is fully done.
+ */
+async function runListingActionHttp(session, category, resume) {
+  const items = await scrapeListingHttp(session, category, {
+    progress: resume.progress,
+    startPage: resume.startIndex + 1,
+  });
+  logger.info('Listing phase finished (cli)', {
+    category: category.key,
+    items: items.length,
+    file: category.listingPath,
+  });
+  if (isShutdownInProgress()) return;
+
+  const proceed = await confirmDetailScrape({
+    label: category.label,
+    itemCount: items.length,
+  });
+  if (!proceed) {
+    logger.info('Detail phase skipped by user / non-interactive default', {
+      category: category.key,
+    });
+    return;
+  }
+  if (!items.length) {
+    logger.warn('No listing items collected — skipping detail phase', {
+      category: category.key,
+    });
+    return;
+  }
+
+  const detailResume = await negotiateAndPrepareProgress(
+    { type: 'detailByPage', categoryKey: category.key, method: 'cli' },
+    category,
+  );
+  await scrapeDetailsHttp(session, category, items, {
+    progress: detailResume.progress,
+    startIndex: detailResume.startIndex,
+  });
+}
+
+/**
+ * Run an `azIndex` action over HTTP.
+ *
+ * @param {HttpSession} session Initialised HTTP session.
+ * @param {ReturnType<typeof getCategory>} category Resolved category.
+ * @param {{ progress: ProgressManager, startIndex: number }} resume Resume state.
+ * @returns {Promise<void>} Resolves once the index has been written.
+ */
+async function runAzActionHttp(session, category, resume) {
+  const result = await scrapeAzIndexHttp(session, category, {
+    progress: resume.progress,
+  });
+  logger.info('AZ index phase finished (cli)', {
+    category: category.key,
+    groups: result.totalGroups,
+    items: result.totalItems,
+    file: category.listingPath,
+  });
+}
+
+/**
+ * Run a `detailByPage` action over HTTP.
+ *
+ * @param {HttpSession} session Initialised HTTP session.
+ * @param {ReturnType<typeof getCategory>} category Resolved category.
+ * @param {{ progress: ProgressManager, startIndex: number }} resume Resume state.
+ * @returns {Promise<void>} Resolves when the detail phase finishes.
+ */
+async function runDetailByPageActionHttp(session, category, resume) {
+  /** @type {ListingItem[]} */
+  const items = await readJson(category.listingPath, []);
+  logger.info('Loaded listing from disk', {
+    category: category.key,
+    count: items.length,
+    file: category.listingPath,
+  });
+  if (!items.length) {
+    logger.warn(
+      'No listing entries found on disk — run the listing scrape first ' +
+        '(e.g. --scrape <key> --method cli).',
+      { category: category.key, file: category.listingPath },
+    );
+    return;
+  }
+  await scrapeDetailsHttp(session, category, items, {
+    progress: resume.progress,
+    startIndex: resume.startIndex,
+  });
+}
+
+/**
+ * Run a `detailBySlug` action over HTTP.
+ *
+ * @param {HttpSession} session Initialised HTTP session.
+ * @param {ReturnType<typeof getCategory>} category Resolved category context.
+ * @param {string} slug Slug to scrape.
+ * @param {{ progress: ProgressManager, startIndex: number }} resume Resume state.
+ * @returns {Promise<void>} Resolves once the detail has been written.
+ */
+async function runDetailBySlugActionHttp(session, category, slug, resume) {
+  const items = [{ slug, title: '', thumbnail: '', url: '' }];
+  const records = await scrapeDetailsHttp(session, category, items, {
+    progress: resume.progress,
+    startIndex: resume.startIndex,
+  });
+  const record = records.find((entry) => entry.slug === slug);
+  if (!record) {
+    throw new Error(`scrapeSingleDetailHttp: no record produced for ${slug}`);
+  }
+  logger.info('Single detail scrape finished (cli)', {
+    slug: record.slug,
+    url: record.url,
+    manifest: category.detailManifestPath,
+  });
+}
+
+/* ------------------------------------------------------------------ */
+/*  Top-level dispatch                                                */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Dispatch the resolved CLI action against either the browser or the
+ * HTTP scraping engine.
  *
  * @param {CliAction} action Parsed CLI intent.
  * @returns {Promise<void>} Resolves once the action is done.
@@ -289,21 +411,51 @@ async function dispatch(action) {
   const category = getCategory(action.categoryKey);
   logger.info('nk-cli scraper starting', {
     action: action.type,
+    method: action.method,
     category: category.key,
     baseUrl: config.baseUrl,
-    headless: config.browser.headless,
   });
 
-  // Negotiate resume *before* launching the browser so a "Cancel"
-  // answer doesn't leak a Chromium process.
+  // Negotiate resume *before* spinning up engines so a "Cancel" answer
+  // doesn't leak a Chromium process or HTTP session.
   const resume = await negotiateAndPrepareProgress(action, category);
   if (isShutdownInProgress()) return;
 
+  if (action.method === 'cli') {
+    const session = await createSession();
+    onShutdownAsync(async () => {
+      // Nothing to close on the HTTP session itself; placeholder for
+      // future cleanup (cookie persistence is already on disk).
+    });
+    switch (action.type) {
+      case 'listing':
+        await runListingActionHttp(session, category, resume);
+        break;
+      case 'azIndex':
+        await runAzActionHttp(session, category, resume);
+        break;
+      case 'detailByPage':
+        await runDetailByPageActionHttp(session, category, resume);
+        break;
+      case 'detailBySlug':
+        await runDetailBySlugActionHttp(session, category, action.slug, resume);
+        break;
+      default: {
+        /** @type {never} */
+        const exhaustive = action;
+        throw new Error(`Unhandled action: ${JSON.stringify(exhaustive)}`);
+      }
+    }
+    logger.info('nk-cli scraper finished', {
+      action: action.type,
+      method: action.method,
+    });
+    return;
+  }
+
+  // Browser mode (default).
   /** @type {import('puppeteer').Browser | null} */
   let browser = null;
-
-  // Register a best-effort browser closer with the shutdown manager so
-  // SIGINT/SIGTERM never leaves Chromium dangling.
   onShutdownAsync(async () => {
     if (browser) {
       logger.info('Closing browser during shutdown');
@@ -317,16 +469,16 @@ async function dispatch(action) {
 
     switch (action.type) {
       case 'listing':
-        await runListingAction(browser, category, resume);
+        await runListingActionBrowser(browser, category, resume);
         break;
       case 'azIndex':
-        await runAzAction(browser, category, resume);
+        await runAzActionBrowser(browser, category, resume);
         break;
       case 'detailByPage':
-        await runDetailByPageAction(browser, category, resume);
+        await runDetailByPageActionBrowser(browser, category, resume);
         break;
       case 'detailBySlug':
-        await runDetailBySlugAction(browser, category, action.slug, resume);
+        await runDetailBySlugActionBrowser(browser, category, action.slug, resume);
         break;
       default: {
         /** @type {never} */
@@ -335,7 +487,10 @@ async function dispatch(action) {
       }
     }
 
-    logger.info('nk-cli scraper finished', { action: action.type });
+    logger.info('nk-cli scraper finished', {
+      action: action.type,
+      method: action.method,
+    });
   } finally {
     await closeBrowser(browser);
     browser = null;
@@ -354,14 +509,12 @@ async function main() {
     await dispatch(action);
   } catch (error) {
     if (error instanceof Error && error.message === 'cancelled') {
-      // requestShutdown handles exit; nothing else to do.
       return;
     }
     logger.error('Fatal error in scraper', {
       error: error instanceof Error ? error.message : String(error),
       stack: error instanceof Error ? error.stack : undefined,
     });
-    // Route through the shutdown manager so partial progress is flushed.
     await requestShutdown('fatal-error', 1);
   }
 }

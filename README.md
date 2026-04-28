@@ -1,11 +1,21 @@
 # nk-cli
 
-A professional Node.js + **Puppeteer** scraper that targets multiple
-categories of `https://nekopoi.care/` (`/hentai`, `/2d-animation`,
-`/3d-hentai`, `/jav-cosplay`, `/jav`, and the `/hentai-list` A–Z index).
-The site sits behind a WAF, so plain HTTP requests cannot return the
-real DOM — this CLI drives a real Chromium instance with stealth
-hardening to render pages exactly as a normal browser would.
+A professional Node.js scraper for `https://nekopoi.care/` covering
+every category (`/hentai`, `/2d-animation`, `/3d-hentai`,
+`/jav-cosplay`, `/jav`, and the `/hentai-list` A–Z index). The CLI is
+**dual-engine**:
+
+- **Browser mode** (`--method browser`, default) drives a real Chromium
+  instance with stealth hardening, used to clear the SafeLine WAF
+  challenge the site sometimes serves.
+- **CLI mode** (`--method cli`) uses `axios` + `cheerio` with a
+  Cookie-Editor JSON export for authentication. Much faster and lower
+  resource usage when a fresh session cookie is on hand.
+
+When the WAF/session is rejected (HTTP 468 or other expired-session
+markers) the CLI mode automatically prompts the user to paste a fresh
+Cookie-Editor JSON, persists it to `nk-cookies.json`, and retries the
+failed request.
 
 ## Highlights
 
@@ -34,10 +44,10 @@ hardening to render pages exactly as a normal browser would.
   plain text. The logger explicitly forces a chalk colour level on
   Windows TTYs so PowerShell / Windows Terminal pick up the ANSI codes
   reliably (see `NK_LOG_COLOR` below).
-- **Sub-command CLI** via [`commander`](https://www.npmjs.com/package/commander)
-  with one command per scraping target (`scrape:hanime`,
-  `scrape:2d-animation`, `scrape:3d-hentai`, `scrape:jav-cosplay`,
-  `scrape:jav`, `scrape:hanimeindex`, `scrape:info`).
+- **Flag-style CLI** via [`argparse`](https://www.npmjs.com/package/argparse).
+  Pick a scrape target with `--scrape <name>` and an engine with
+  `--method <cli|browser>`. Detail/info runs use the same flag with a
+  `<key>info` token (e.g. `--scrape hanimeinfo --slug my-slug`).
 - **Interactive prompt** between the listing and detail phases via
   [`@inquirer/prompts`](https://www.npmjs.com/package/@inquirer/prompts):
   the user is asked whether to continue. Set `NK_AUTO_DETAIL=yes|no`
@@ -59,21 +69,36 @@ hardening to render pages exactly as a normal browser would.
 │  ├─ browser/
 │  │  └─ launcher.js          # Puppeteer launch + stealth + page setup
 │  ├─ cli/
-│  │  ├─ parser.js            # Commander-based sub-command dispatcher
+│  │  ├─ parser.js            # argparse-based --scrape/--method dispatcher
 │  │  └─ prompt.js            # Inquirer wrapper (with non-TTY fallback)
 │  ├─ config/
 │  │  ├─ index.js             # Env-driven configuration (browser, paths, …)
 │  │  └─ categories.js        # Registry of every scraping target
-│  ├─ parsers/
-│  │  ├─ pageItems.js         # /category/<slug> listing parser
-│  │  ├─ contentBody.js       # .konten metadata parser
-│  │  ├─ nkPlayer.js          # #nk-player streaming parser
-│  │  ├─ downloadSection.js   # .nk-download-section parser
-│  │  └─ azList.js            # /category/hentai-list A–Z index parser
-│  ├─ services/
-│  │  ├─ listingScraper.js    # Generic listing pipeline (any category)
-│  │  ├─ detailScraper.js     # Generic detail-page pipeline
-│  │  └─ azScraper.js         # A–Z index page pipeline
+│  ├─ http/                    # CLI mode (axios + cheerio + cookies)
+│  │  ├─ client.js            # Axios factory + WAF-status detection
+│  │  ├─ cookieStore.js       # Cookie-Editor JSON I/O
+│  │  ├─ session.js           # Cookie-aware fetch with auto-retry
+│  │  ├─ listingScraper.js    # HTTP listing pipeline
+│  │  ├─ detailScraper.js     # HTTP detail pipeline
+│  │  └─ azScraper.js         # HTTP A–Z index pipeline
+│  ├─ parsers/                 # Browser-mode DOM extractors
+│  │  ├─ pageItems.js
+│  │  ├─ contentBody.js
+│  │  ├─ nkPlayer.js
+│  │  ├─ downloadSection.js
+│  │  ├─ azList.js
+│  │  └─ cheerio/              # CLI-mode cheerio extractors (same shape)
+│  │     ├─ pageItems.js
+│  │     ├─ contentBody.js
+│  │     ├─ nkPlayer.js
+│  │     ├─ downloadSection.js
+│  │     └─ azList.js
+│  ├─ prompts/
+│  │  └─ cookiePrompt.js      # Inquirer prompt to paste fresh cookies
+│  ├─ services/                # Browser-mode (puppeteer) pipelines
+│  │  ├─ listingScraper.js
+│  │  ├─ detailScraper.js
+│  │  └─ azScraper.js
 │  └─ utils/
 │     ├─ logger.js            # Stdout + daily file logger
 │     ├─ storage.js           # Atomic JSON read/write
@@ -96,31 +121,50 @@ binary.
 
 ## Run
 
-The CLI exposes one sub-command per scraping target. After the listing
-phase finishes the program asks whether to continue to the detail-page
-phase ("Yes / No"). Pick the relevant target:
+The CLI uses two flags: `--scrape <name>` (the target) and
+`--method <cli|browser>` (the engine). After a listing phase the
+program asks whether to continue to the detail phase ("Yes / No").
 
 ```bash
-# Category listing scrapers (followed by an interactive Y/N prompt)
-node main.js scrape:hanime          # /category/hentai
-node main.js scrape:2d-animation    # /category/2d-animation
-node main.js scrape:3d-hentai       # /category/3d-hentai
-node main.js scrape:jav-cosplay     # /category/jav-cosplay
-node main.js scrape:jav             # /category/jav
+# Category listing scrapers (Y/N prompt before detail phase)
+node main.js --scrape hanime --method browser
+node main.js --scrape hanime --method cli           # axios + cheerio
+node main.js --scrape 2d-animation --method browser
+node main.js --scrape 3d-hentai --method browser
+node main.js --scrape jav-cosplay --method browser
+node main.js --scrape jav --method browser
 
 # A–Z index (no detail phase — the tooltip card already carries metadata)
-node main.js scrape:hanimeindex     # /category/hentai-list
+node main.js --scrape hanimeindex --method browser
+node main.js --scrape hanimeindex --method cli
 
 # Detail-only runs (skip the listing phase)
-node main.js scrape:info --slug some-anime-slug
-node main.js scrape:info --slug some-anime-slug --category 2d-animation
-node main.js scrape:info --page 2d-animation     # uses 2dAnimationLists.json
+node main.js --scrape hanimeinfo --slug my-slug --method cli
+node main.js --scrape hanimeinfo --slug my-slug --method browser
+node main.js --scrape info --category 2d-animation --slug my-slug
+node main.js --scrape info --page 2d-animation     # replays an existing
+                                                   # listing JSON through
+                                                   # the detail phase
 ```
 
-Set `NK_AUTO_DETAIL=yes` to bypass the interactive prompt and chain the
-detail phase automatically (handy for cron / CI). `NK_AUTO_DETAIL=no`
-stops after the listing without asking. Run `node main.js --help` to
-list every command and its options.
+`--method` defaults to `browser` when omitted. Set `NK_AUTO_DETAIL=yes`
+to bypass the listing/detail prompt and chain the detail phase
+automatically (handy for cron / CI); `NK_AUTO_DETAIL=no` stops after
+the listing without asking. Run `node main.js --help` to list every
+command and its options.
+
+### CLI-mode cookies
+
+CLI mode authenticates with the Cookie-Editor JSON export of the live
+session. Save the export as `nk-cookies.json` in the project root (or
+override the path via `NK_COOKIE_FILE`). The file is git-ignored.
+
+If a request comes back with a WAF-shaped response (HTTP 468, 403,
+419, 429, or a known challenge body) the CLI prompts you to paste a
+fresh export, persists it to disk, and retries the failed request
+automatically. Set `NK_AUTO_COOKIE_REFRESH=no` to skip the prompt in
+non-interactive shells (the request will then surface the original
+WAF error).
 
 ## Configuration
 
@@ -172,14 +216,14 @@ is split into a directory of small per-prefix bucket files plus a
 manifest (no more 80 000-line monoliths) so each file stays
 manageable, diff-friendly and resume-safe:
 
-| Command | Listing file | Detail directory |
+| Command (browser or cli) | Listing file | Detail directory |
 | --- | --- | --- |
-| `scrape:hanime` | `output/hanimeLists.json` | `output/details/hanime/` |
-| `scrape:2d-animation` | `output/2dAnimationLists.json` | `output/details/2d-animation/` |
-| `scrape:3d-hentai` | `output/3dHentaiLists.json` | `output/details/3d-hentai/` |
-| `scrape:jav-cosplay` | `output/javCosplayLists.json` | `output/details/jav-cosplay/` |
-| `scrape:jav` | `output/javLists.json` | `output/details/jav/` |
-| `scrape:hanimeindex` | `output/hanimeIndex.json` | _(no detail phase)_ |
+| `--scrape hanime` | `output/hanimeLists.json` | `output/details/hanime/` |
+| `--scrape 2d-animation` | `output/2dAnimationLists.json` | `output/details/2d-animation/` |
+| `--scrape 3d-hentai` | `output/3dHentaiLists.json` | `output/details/3d-hentai/` |
+| `--scrape jav-cosplay` | `output/javCosplayLists.json` | `output/details/jav-cosplay/` |
+| `--scrape jav` | `output/javLists.json` | `output/details/jav/` |
+| `--scrape hanimeindex` | `output/hanimeIndex.json` | _(no detail phase)_ |
 
 A `*.progress.meta.json` file alongside every output captures where the
 loop stopped (`command`, `status`, `lastCompletedIndex`, `totalItems`,
