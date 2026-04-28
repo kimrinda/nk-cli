@@ -161,19 +161,34 @@ override the path via `NK_COOKIE_FILE`). The file is git-ignored.
 
 If a request comes back with a WAF-shaped response (HTTP 468, 403,
 419, 429, or a known challenge body) the CLI prints a coloured warning
-banner (yellow/red for the failure, cyan for the actionable tips) and
-prompts directly in the terminal:
+banner (yellow/red for the failure, cyan for the actionable tips),
+**pauses the scrape**, and opens `nk-cookies.json` in the operating
+system's default editor via the [`open`](https://www.npmjs.com/package/open)
+package. While the editor is open the terminal sits at:
 
 ```
-Paste your cookie here: <paste JSON, press Enter>
+Press Enter once you have saved the fresh cookies (or type "abort"):
 ```
 
-The pasted value is parsed (JSON array or `Cookie:` header line),
-persisted atomically to `nk-cookies.json`, and the failed request is
-retried automatically — no external editor is launched. Press Enter
-on an empty line to abort. Set `NK_AUTO_COOKIE_REFRESH=no` to skip the
-prompt in non-interactive shells (the request will then surface the
-original WAF error).
+Workflow:
+
+1. Open the target site in your browser, log in, and click the
+   Cookie-Editor extension → Export → JSON.
+2. Paste the exported JSON into the editor that opened automatically,
+   overwriting the existing contents, save and close.
+3. Switch back to the terminal and press Enter.
+
+The CLI re-reads `nk-cookies.json` from disk, rebuilds the axios
+client and retries the failed request. Type `abort` (or `cancel`) at
+the prompt instead of Enter to surface the original WAF error.
+
+Why open an editor instead of asking for an inline paste? Windows
+PowerShell does not paste multi-line JSON cleanly into a single-line
+prompt, so delegating to the OS default text editor keeps the same UX
+across Linux, macOS and Windows.
+
+Set `NK_AUTO_COOKIE_REFRESH=no` to skip the prompt in non-interactive
+shells (the request will then surface the original WAF error).
 
 ## Configuration
 
