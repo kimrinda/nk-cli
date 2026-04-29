@@ -13,6 +13,7 @@ import { buildDetailUrl } from '../config/categories.js';
 import { parseContentBodyHtml } from '../parsers/cheerio/contentBody.js';
 import { parseNkPlayerHtml } from '../parsers/cheerio/nkPlayer.js';
 import { parseDownloadSectionHtml } from '../parsers/cheerio/downloadSection.js';
+import { parseFeaturedImageHtml } from '../parsers/cheerio/featuredImage.js';
 import { logger } from '../utils/logger.js';
 import { withRetry, sleep } from '../utils/retry.js';
 import {
@@ -48,6 +49,7 @@ async function scrapeOne(session, category, item) {
   const content = parseContentBodyHtml(html);
   const player = parseNkPlayerHtml(html, url);
   const downloads = parseDownloadSectionHtml(html, url);
+  const images = parseFeaturedImageHtml(html);
   return {
     slug: item.slug,
     url,
@@ -56,6 +58,7 @@ async function scrapeOne(session, category, item) {
     content,
     player,
     downloads,
+    images,
     scrapedAt: new Date().toISOString(),
   };
 }

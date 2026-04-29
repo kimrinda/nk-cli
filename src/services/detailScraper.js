@@ -17,6 +17,7 @@ import { buildDetailUrl } from '../config/categories.js';
 import { getContentBody } from '../parsers/contentBody.js';
 import { parseNkPlayer } from '../parsers/nkPlayer.js';
 import { getDownloadSection } from '../parsers/downloadSection.js';
+import { parseFeaturedImage } from '../parsers/featuredImage.js';
 import { logger } from '../utils/logger.js';
 import { withRetry, sleep } from '../utils/retry.js';
 import {
@@ -32,6 +33,7 @@ import { createDetailStoreForCategory } from '../storage/detailStorage.js';
  * @typedef {import('../parsers/contentBody.js').ContentBody} ContentBody
  * @typedef {import('../parsers/nkPlayer.js').PlayerData} PlayerData
  * @typedef {import('../parsers/downloadSection.js').DownloadRow} DownloadRow
+ * @typedef {import('../parsers/featuredImage.js').FeaturedImageData} FeaturedImageData
  * @typedef {import('../config/categories.js').ResolvedCategory} ResolvedCategory
  */
 
@@ -46,6 +48,7 @@ import { createDetailStoreForCategory } from '../storage/detailStorage.js';
  * @property {ContentBody} content Parsed `.konten` metadata block.
  * @property {PlayerData} player Parsed `#nk-player` block.
  * @property {DownloadRow[]} downloads Parsed `.nk-download-section` rows.
+ * @property {FeaturedImageData | null} images Parsed `.nk-featured-img` srcset data.
  * @property {string} scrapedAt ISO 8601 timestamp of capture.
  */
 
@@ -93,10 +96,11 @@ async function scrapeOne(page, category, item) {
     },
   );
 
-  const [content, player, downloads] = await Promise.all([
+  const [content, player, downloads, images] = await Promise.all([
     page.evaluate(getContentBody),
     page.evaluate(parseNkPlayer),
     page.evaluate(getDownloadSection),
+    page.evaluate(parseFeaturedImage),
   ]);
 
   return {
@@ -107,6 +111,7 @@ async function scrapeOne(page, category, item) {
     content: /** @type {ContentBody} */ (content),
     player: /** @type {PlayerData} */ (player),
     downloads: /** @type {DownloadRow[]} */ (downloads),
+    images: /** @type {FeaturedImageData | null} */ (images),
     scrapedAt: new Date().toISOString(),
   };
 }

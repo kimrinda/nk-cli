@@ -160,5 +160,6 @@ export const config = Object.freeze({
     retryAttempts: intEnv(process.env.NK_RETRY_ATTEMPTS, 3),
     retryBaseDelayMs: intEnv(process.env.NK_RETRY_BASE_DELAY_MS, 2_500),
     politeDelayMs: intEnv(process.env.NK_POLITE_DELAY_MS, 800),
+    thumbnailConcurrency: intEnv(process.env.NK_THUMBNAIL_CONCURRENCY, 10),
   }),
 });

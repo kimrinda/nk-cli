@@ -207,5 +207,5 @@ export function buildDetailUrl(category, item) {
  */
 export function buildCategoryUrl(category) {
   const root = config.baseUrl.replace(/\/$/, '');
-  return `${root}/category/${category.slug}/`;
+  return category.kind === "azIndex" ? `${root}/${category.slug}` : `${root}/category/${category.slug}/`;
 }

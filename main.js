@@ -11,6 +11,8 @@
  *   node main.js --scrape hanimeinfo --slug my-slug --method cli
  *   node main.js --scrape hanimeindex --method browser
  *   node main.js --scrape info --category hanime --page hanime --method cli
+ *   node main.js --verify hanime
+ *   node main.js --verify 2d-animation --method cli
  */
 
 // Load `.env` (if present) before any other module reads `process.env`.
@@ -44,6 +46,26 @@ import {
   ProgressManager,
   negotiateResume,
 } from './src/utils/progressManager.js';
+import { verifyCategory, printVerifyReport } from './src/verify/verifyDetails.js';
+import {
+  loadMissingReport,
+  buildReport,
+  saveMissingReport,
+  deleteMissingReport,
+  reportsAreEqual,
+} from './src/verify/missingReport.js';
+import {
+  bulkDownload,
+  buildDetailJobs,
+  buildHanimeIndexJobs,
+  printDownloadReport,
+  thumbnailDir,
+} from './src/thumbnail/downloader.js';
+import {
+  verifyThumbnails,
+  verifyHanimeIndexThumbnails,
+  printThumbnailVerifyReport,
+} from './src/thumbnail/thumbnailVerify.js';
 
 /**
  * @typedef {import('./src/cli/parser.js').CliAction} CliAction
@@ -84,6 +106,12 @@ function resolveProgressTarget(action, category) {
         outputFile: category.detailManifestPath,
       };
     }
+    case 'verify':
+    case 'thumbnail':
+    case 'verifyThumbnail':
+      throw new Error(
+        'resolveProgressTarget should not be called for verify/thumbnail actions',
+      );
     default: {
       /** @type {never} */
       const exhaustive = action;
@@ -396,6 +424,370 @@ async function runDetailBySlugActionHttp(session, category, slug, resume) {
 }
 
 /* ------------------------------------------------------------------ */
+/*  Verify action                                                     */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Lazily import `@inquirer/prompts.select`. Returns `null` when the
+ * package is unavailable so callers can fall back to a safe default.
+ *
+ * @returns {Promise<((q: object) => Promise<string>) | null>} Loaded
+ *   `select` function or `null`.
+ */
+async function loadSelect() {
+  try {
+    const mod = await import('@inquirer/prompts');
+    return /** @type {any} */ (mod).select ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Prompt the user to select a scraping method (CLI, Browser, or Cancel).
+ *
+ * Falls back to the value of `fallbackMethod` in non-interactive mode.
+ *
+ * @param {ScrapeMethod} fallbackMethod Default method when stdin is
+ *   not a TTY or inquirer is unavailable.
+ * @returns {Promise<ScrapeMethod | 'cancel'>} The chosen method or
+ *   `'cancel'` if the user aborted.
+ */
+async function promptScrapeMethod(fallbackMethod) {
+  const select = await loadSelect();
+  if (!select || !process.stdin.isTTY) {
+    logger.info('Non-interactive mode — using default scrape method', {
+      method: fallbackMethod,
+    });
+    return fallbackMethod;
+  }
+  /** @type {string} */
+  const choice = await select({
+    message: 'Which scraping method would you like to use?',
+    choices: [
+      { name: 'CLI  (axios + cheerio — fast, needs fresh cookies)', value: 'cli' },
+      { name: 'Browser  (puppeteer — slower, handles WAF automatically)', value: 'browser' },
+      { name: 'Cancel', value: 'cancel' },
+    ],
+    default: fallbackMethod,
+  });
+  return /** @type {ScrapeMethod | 'cancel'} */ (choice);
+}
+/**
+ * Scrape only the supplied missing items using the selected method,
+ * inserting results into the existing per-prefix detail store. Reuses
+ * the existing detail scraper pipelines with a synthetic listing
+ * composed from the missing items.
+ *
+ * @param {ScrapeMethod} method Scraping engine chosen by the user.
+ * @param {ReturnType<typeof getCategory>} category Resolved category.
+ * @param {import('./src/verify/verifyDetails.js').MissingItem[]} items
+ *   Missing items to scrape.
+ * @returns {Promise<void>} Resolves once the scrape finishes.
+ */
+async function scrapeMissingItems(method, category, items) {
+  if (!items.length) {
+    logger.info('No missing items to scrape');
+    return;
+  }
+
+  /** @type {ListingItem[]} */
+  const syntheticList = items.map((m) => ({
+    slug: m.slug,
+    title: m.title,
+    thumbnail: m.thumbnail ?? '',
+    url: m.url,
+  }));
+
+  const detailTarget = {
+    command: `scrape:${category.key}:detail`,
+    outputFile: /** @type {string} */ (category.detailManifestPath),
+  };
+
+  const progress = new ProgressManager(detailTarget);
+  await progress.init({
+    totalItems: syntheticList.length,
+    lastCompletedIndex: -1,
+  });
+
+  logger.info('Starting missing-item scrape', {
+    category: category.key,
+    method,
+    itemCount: syntheticList.length,
+  });
+
+  if (method === 'cli') {
+    const session = await createSession();
+    await scrapeDetailsHttp(session, category, syntheticList, {
+      progress,
+      startIndex: 0,
+    });
+  } else {
+    /** @type {import('puppeteer').Browser | null} */
+    let browser = null;
+    onShutdownAsync(async () => {
+      if (browser) {
+        logger.info('Closing browser during shutdown');
+        await closeBrowser(browser);
+        browser = null;
+      }
+    });
+    try {
+      browser = await launchBrowser();
+      await scrapeDetails(browser, category, syntheticList, {
+        progress,
+        startIndex: 0,
+      });
+    } finally {
+      await closeBrowser(browser);
+      browser = null;
+    }
+  }
+
+  logger.info('Missing-item scrape completed', {
+    category: category.key,
+    items: syntheticList.length,
+  });
+}
+
+/**
+ * Run a full `--verify` action: check detail completeness, prompt the
+ * user for next steps, and optionally scrape missing items or save a
+ * report file.
+ *
+ * @param {CliAction & { type: 'verify' }} action Parsed verify action.
+ * @returns {Promise<void>} Resolves once the verify flow finishes.
+ */
+async function runVerify(action) {
+  installShutdownHooks();
+  const category = getCategory(action.categoryKey);
+  logger.info('nk-cli verify starting', {
+    category: category.key,
+  });
+
+  // Check for an existing missing report first.
+  const existingReport = await loadMissingReport(action.categoryKey);
+
+  if (existingReport && existingReport.missingItems > 0) {
+    // A previous report exists — offer to scrape, re-check, or skip.
+    logger.info('A previous missing-detail report was found', {
+      category: action.categoryKey,
+      missingItems: existingReport.missingItems,
+    });
+
+    const select = await loadSelect();
+    /** @type {string} */
+    let reportChoice = 'recheck';
+
+    if (select && process.stdin.isTTY) {
+      reportChoice = await select({
+        message:
+          `A previous missing-detail report was found ` +
+          `(${existingReport.missingItems} missing item(s)). ` +
+          'What would you like to do?',
+        choices: [
+          { name: 'Yes — scrape the missing items now', value: 'yes' },
+          { name: 'No — exit without changes', value: 'no' },
+          { name: 'Re-check / Verify Again', value: 'recheck' },
+        ],
+        default: 'yes',
+      });
+    }
+
+    if (reportChoice === 'yes') {
+      const method = await promptScrapeMethod(action.method);
+      if (method === 'cancel') {
+        logger.info('User cancelled method selection — exiting');
+        return;
+      }
+      await scrapeMissingItems(method, category, existingReport.items);
+
+      // Re-verify after scraping to see if any still remain.
+      const freshResult = await verifyCategory(action.categoryKey);
+      await printVerifyReport(freshResult);
+
+      if (freshResult.missingItems === 0) {
+        await deleteMissingReport(action.categoryKey);
+      } else {
+        const updated = buildReport(freshResult, existingReport);
+        await saveMissingReport(action.categoryKey, updated);
+      }
+      return;
+    }
+
+    if (reportChoice === 'no') {
+      // Compare current state with saved report before exiting.
+      const freshResult = await verifyCategory(action.categoryKey);
+      const freshReport = buildReport(freshResult, existingReport);
+
+      if (!reportsAreEqual(existingReport, freshReport)) {
+        logger.info('Report has changed since last save — updating on disk');
+        await saveMissingReport(action.categoryKey, freshReport);
+      } else {
+        logger.info('Report unchanged — exiting safely');
+      }
+      return;
+    }
+
+    // reportChoice === 'recheck' — fall through to fresh verification.
+  }
+
+  // Fresh verification pass.
+  const result = await verifyCategory(action.categoryKey);
+  await printVerifyReport(result);
+
+  if (result.missingItems === 0) {
+    // Nothing is missing — clean up any stale report.
+    await deleteMissingReport(action.categoryKey);
+    logger.info('Verification complete — no missing items', {
+      category: action.categoryKey,
+    });
+    return;
+  }
+
+  // Prompt user.
+  const select = await loadSelect();
+  /** @type {string} */
+  let userChoice = 'no';
+
+  if (select && process.stdin.isTTY) {
+    userChoice = await select({
+      message: `${result.missingItems} missing item(s) found. Do you want to scrape them?`,
+      choices: [
+        { name: 'Yes', value: 'yes' },
+        { name: 'No', value: 'no' },
+      ],
+      default: 'yes',
+    });
+  } else {
+    logger.info(
+      'Non-interactive mode — saving missing report without scraping',
+    );
+  }
+
+  if (userChoice === 'yes') {
+    const method = await promptScrapeMethod(action.method);
+    if (method === 'cancel') {
+      logger.info('User cancelled method selection — saving report instead');
+      const report = buildReport(result, existingReport);
+      const filePath = await saveMissingReport(action.categoryKey, report);
+      logger.info('Missing items saved to report — scrape them later with --verify', {
+        file: filePath,
+      });
+      return;
+    }
+    await scrapeMissingItems(method, category, result.items);
+
+    // Re-verify after scraping.
+    const freshResult = await verifyCategory(action.categoryKey);
+    await printVerifyReport(freshResult);
+
+    if (freshResult.missingItems === 0) {
+      await deleteMissingReport(action.categoryKey);
+    } else {
+      const report = buildReport(freshResult, existingReport);
+      await saveMissingReport(action.categoryKey, report);
+    }
+  } else {
+    // Save missing report for later.
+    const report = buildReport(result, existingReport);
+    const filePath = await saveMissingReport(action.categoryKey, report);
+    logger.info('Missing items saved to report — scrape them later with --verify', {
+      file: filePath,
+    });
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/*  Thumbnail download action                                         */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Run a `--thumbnail <category>` download action.
+ *
+ * @param {CliAction & { type: 'thumbnail' }} action Parsed action.
+ * @returns {Promise<void>} Resolves once the download finishes.
+ */
+async function runThumbnail(action) {
+  installShutdownHooks();
+  const categoryKey = action.categoryKey;
+  const isIndex = categoryKey === 'hanimeindex';
+  const label = isIndex ? 'Hanime Index (A–Z Covers)' : getCategory(categoryKey).label;
+
+  logger.info('nk-cli thumbnail download starting', { category: categoryKey });
+
+  const jobs = isIndex
+    ? await buildHanimeIndexJobs()
+    : await buildDetailJobs(categoryKey);
+
+  if (jobs.length === 0) {
+    logger.warn('No thumbnail jobs to process — are the detail/index files present?', {
+      category: categoryKey,
+    });
+    return;
+  }
+
+  const result = await bulkDownload(jobs);
+  await printDownloadReport(result, label);
+}
+
+/* ------------------------------------------------------------------ */
+/*  Thumbnail verify action                                           */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Run a `--verify --thumbnail <category>` verification action.
+ *
+ * @param {CliAction & { type: 'verifyThumbnail' }} action Parsed action.
+ * @returns {Promise<void>} Resolves once the verification finishes.
+ */
+async function runVerifyThumbnail(action) {
+  installShutdownHooks();
+  const categoryKey = action.categoryKey;
+  const isIndex = categoryKey === 'hanimeindex';
+  const label = isIndex ? 'Hanime Index (A\u2013Z Covers)' : getCategory(categoryKey).label;
+
+  logger.info('nk-cli thumbnail verification starting', { category: categoryKey });
+
+  const result = isIndex
+    ? await verifyHanimeIndexThumbnails()
+    : await verifyThumbnails(categoryKey);
+
+  await printThumbnailVerifyReport(result);
+
+  if (result.missingItems > 0) {
+    // Offer to download the missing thumbnails.
+    const select = await loadSelect();
+    /** @type {string} */
+    let userChoice = 'no';
+
+    if (select && process.stdin.isTTY) {
+      userChoice = await select({
+        message: `${result.missingItems} thumbnail(s) missing. Download them now?`,
+        choices: [
+          { name: 'Yes', value: 'yes' },
+          { name: 'No', value: 'no' },
+        ],
+        default: 'yes',
+      });
+    } else {
+      logger.info('Non-interactive mode — skipping thumbnail download');
+    }
+
+    if (userChoice === 'yes') {
+      const jobs = isIndex
+        ? await buildHanimeIndexJobs()
+        : await buildDetailJobs(categoryKey);
+
+      if (jobs.length > 0) {
+        const dlResult = await bulkDownload(jobs);
+        await printDownloadReport(dlResult, label);
+      }
+    }
+  }
+}
+
+/* ------------------------------------------------------------------ */
 /*  Top-level dispatch                                                */
 /* ------------------------------------------------------------------ */
 
@@ -407,6 +799,24 @@ async function runDetailBySlugActionHttp(session, category, slug, resume) {
  * @returns {Promise<void>} Resolves once the action is done.
  */
 async function dispatch(action) {
+  // Verify has its own flow, independent of scrape engines.
+  if (action.type === 'verify') {
+    await runVerify(/** @type {CliAction & { type: 'verify' }} */ (action));
+    return;
+  }
+
+  // Thumbnail download.
+  if (action.type === 'thumbnail') {
+    await runThumbnail(/** @type {CliAction & { type: 'thumbnail' }} */ (action));
+    return;
+  }
+
+  // Thumbnail verification.
+  if (action.type === 'verifyThumbnail') {
+    await runVerifyThumbnail(/** @type {CliAction & { type: 'verifyThumbnail' }} */ (action));
+    return;
+  }
+
   installShutdownHooks();
   const category = getCategory(action.categoryKey);
   logger.info('nk-cli scraper starting', {

@@ -69,7 +69,7 @@ failed request.
 │  ├─ browser/
 │  │  └─ launcher.js          # Puppeteer launch + stealth + page setup
 │  ├─ cli/
-│  │  ├─ parser.js            # argparse-based --scrape/--method dispatcher
+│  │  ├─ parser.js            # argparse-based --scrape/--verify/--method dispatcher
 │  │  └─ prompt.js            # Inquirer wrapper (with non-TTY fallback)
 │  ├─ config/
 │  │  ├─ index.js             # Env-driven configuration (browser, paths, …)
@@ -99,10 +99,16 @@ failed request.
 │  │  ├─ listingScraper.js
 │  │  ├─ detailScraper.js
 │  │  └─ azScraper.js
+│  ├─ storage/
+│  │  └─ detailStorage.js     # Per-prefix bucket detail store
+│  ├─ verify/                   # Detail completeness verification
+│  │  ├─ verifyDetails.js     # Core verification logic + coloured report
+│  │  └─ missingReport.js     # Missing-detail report I/O
 │  └─ utils/
 │     ├─ logger.js            # Stdout + daily file logger
 │     ├─ storage.js           # Atomic JSON read/write
 │     ├─ retry.js             # Exponential backoff helper
+│     ├─ progressManager.js   # Resume-friendly progress checkpoints
 │     └─ shutdown.js          # Graceful shutdown registry
 ├─ output/                    # JSON outputs are written here
 └─ logs/                      # Daily log files are written here
@@ -152,6 +158,42 @@ to bypass the listing/detail prompt and chain the detail phase
 automatically (handy for cron / CI); `NK_AUTO_DETAIL=no` stops after
 the listing without asking. Run `node main.js --help` to list every
 command and its options.
+
+### Verify missing details
+
+```bash
+# Check which detail pages are missing for each category
+node main.js --verify hanime
+node main.js --verify 2d-animation
+node main.js --verify 3d-hentai
+node main.js --verify jav-cosplay
+node main.js --verify jav
+
+# With a specific scraping method for re-scraping missing items
+node main.js --verify hanime --method cli
+node main.js --verify jav-cosplay --method browser
+```
+
+The verify command compares the parent listing JSON against every split
+detail bucket file under `output/details/<category>/`. A coloured
+terminal report shows the total, verified, missing item counts and the
+missing percentage.
+
+If missing items exist, an interactive prompt asks whether to scrape
+them immediately or save a report for later. When choosing "No", a
+`missing-detail-report.json` is written to the category's detail
+directory containing all missing slugs, titles, and URLs. Running
+`--verify` again on a category with an existing report offers three
+options:
+
+- **Yes** — scrape the missing items from the saved report.
+- **No** — compare and exit (auto-saves if the report changed).
+- **Re-check / Verify Again** — ignore the saved report and run a
+  fresh verification pass.
+
+Missing-item scrapes insert into the existing per-prefix bucket store
+(no duplicates, standard resume behaviour). If all missing items are
+scraped successfully, the report file is deleted automatically.
 
 ### CLI-mode cookies
 

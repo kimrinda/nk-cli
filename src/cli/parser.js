@@ -40,6 +40,9 @@ import { CATEGORIES } from '../config/categories.js';
  *   | { type: 'azIndex', categoryKey: string, method: ScrapeMethod }
  *   | { type: 'detailBySlug', categoryKey: string, slug: string, method: ScrapeMethod }
  *   | { type: 'detailByPage', categoryKey: string, method: ScrapeMethod }
+ *   | { type: 'verify', categoryKey: string, method: ScrapeMethod }
+ *   | { type: 'thumbnail', categoryKey: string, method: ScrapeMethod }
+ *   | { type: 'verifyThumbnail', categoryKey: string, method: ScrapeMethod }
  * )} CliAction
  */
 
@@ -95,7 +98,8 @@ export function buildParser() {
     prog: 'nk-cli',
     description:
       'Dual-engine scraper for nekopoi.care. Pick a scraping target ' +
-      'with --scrape and an engine with --method.',
+      'with --scrape and an engine with --method, or verify detail ' +
+      'completeness with --verify.',
     formatter_class: RawDescriptionHelpFormatter,
     epilog: [
       'Examples:',
@@ -104,17 +108,43 @@ export function buildParser() {
       '  node main.js --scrape hanimeinfo --slug my-slug --method cli',
       '  node main.js --scrape info --category hanime --page hanime --method cli',
       '  node main.js --scrape hanimeindex --method browser',
+      '  node main.js --verify hanime',
+      '  node main.js --verify 2d-animation --method cli',
+      '  node main.js --thumbnail hanime',
+      '  node main.js --thumbnail hanimeindex',
+      '  node main.js --verify --thumbnail hanime',
     ].join('\n'),
   });
 
   parser.add_argument('--scrape', {
-    required: true,
+    required: false,
+    default: null,
     choices: allScrapeTokens,
     help:
       'Scrape target. ' +
       `Listing categories: ${tokens.listingTokens.join(', ')}. ` +
       `AZ-index categories: ${tokens.azIndexTokens.join(', ')}. ` +
       `Detail/info targets: ${tokens.infoTokens.join(', ')}.`,
+  });
+  parser.add_argument('--verify', {
+    required: false,
+    default: null,
+    nargs: '?',
+    const: '__flag_only__',
+    metavar: `{${tokens.listingTokens.join(',')}}`,
+    help:
+      'Verify detail content completeness for a category. ' +
+      'Can also be used as a bare flag with --thumbnail: --verify --thumbnail hanime. ' +
+      `Supported: ${tokens.listingTokens.join(', ')}.`,
+  });
+  const thumbnailChoices = [...tokens.listingTokens, 'hanimeindex'];
+  parser.add_argument('--thumbnail', {
+    required: false,
+    default: null,
+    choices: thumbnailChoices,
+    help:
+      'Download thumbnails / cover images for a category. ' +
+      `Supported: ${thumbnailChoices.join(', ')}.`,
   });
   parser.add_argument('--method', {
     required: false,
@@ -153,11 +183,52 @@ export function buildParser() {
  */
 function resolveAction(args) {
   const tokens = describeScrapeTokens();
-  const scrape = String(args.scrape);
   const method = /** @type {ScrapeMethod} */ (args.method ?? 'browser');
   const slug = args.slug ? String(args.slug) : null;
   const pageKey = args.page ? String(args.page) : null;
   const categoryArg = args.category ? String(args.category) : 'hanime';
+
+  // --thumbnail (standalone download or combined with --verify).
+  if (args.thumbnail) {
+    if (args.scrape) {
+      throw new Error('--thumbnail and --scrape are mutually exclusive');
+    }
+    const thumbKey = String(args.thumbnail);
+
+    // --verify --thumbnail <key>  →  verifyThumbnail
+    if (args.verify !== undefined && args.verify !== null) {
+      return { type: 'verifyThumbnail', categoryKey: thumbKey, method };
+    }
+
+    // --thumbnail <key>  →  download thumbnails
+    return { type: 'thumbnail', categoryKey: thumbKey, method };
+  }
+
+  // --verify takes precedence and is mutually exclusive with --scrape.
+  if (args.verify !== undefined && args.verify !== null) {
+    if (args.scrape) {
+      throw new Error('--verify and --scrape are mutually exclusive');
+    }
+    const verifyVal = String(args.verify);
+    if (verifyVal === '__flag_only__') {
+      throw new Error(
+        '--verify requires a category argument or must be combined with --thumbnail',
+      );
+    }
+    if (!tokens.listingTokens.includes(verifyVal)) {
+      throw new Error(
+        `Invalid --verify value "${verifyVal}". ` +
+          `Supported: ${tokens.listingTokens.join(', ')}.`,
+      );
+    }
+    return { type: 'verify', categoryKey: verifyVal, method };
+  }
+
+  if (!args.scrape) {
+    throw new Error('Either --scrape or --verify is required');
+  }
+
+  const scrape = String(args.scrape);
 
   if (tokens.listingTokens.includes(scrape)) {
     return { type: 'listing', categoryKey: scrape, method };
@@ -200,5 +271,14 @@ function resolveAction(args) {
 export async function parseArgs(argv) {
   const parser = buildParser();
   const args = parser.parse_args(argv.slice(2));
-  return resolveAction(/** @type {Record<string, string | null>} */ (args));
+  const parsed = /** @type {Record<string, string | null>} */ (args);
+
+  // When the user runs `node main.js` with no action flags, print help
+  // and exit cleanly instead of surfacing a confusing error.
+  if (parsed.scrape == null && parsed.verify == null && parsed.thumbnail == null) {
+    parser.print_help();
+    process.exit(0);
+  }
+
+  return resolveAction(parsed);
 }
