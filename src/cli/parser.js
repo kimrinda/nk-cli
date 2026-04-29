@@ -40,6 +40,7 @@ import { CATEGORIES } from '../config/categories.js';
  *   | { type: 'azIndex', categoryKey: string, method: ScrapeMethod }
  *   | { type: 'detailBySlug', categoryKey: string, slug: string, method: ScrapeMethod }
  *   | { type: 'detailByPage', categoryKey: string, method: ScrapeMethod }
+ *   | { type: 'genres', method: ScrapeMethod }
  *   | { type: 'verify', categoryKey: string, method: ScrapeMethod }
  *   | { type: 'thumbnail', categoryKey: string, method: ScrapeMethod }
  *   | { type: 'verifyThumbnail', categoryKey: string, method: ScrapeMethod }
@@ -92,6 +93,7 @@ export function buildParser() {
     ...tokens.listingTokens,
     ...tokens.azIndexTokens,
     ...tokens.infoTokens,
+    'genres',
   ];
 
   const parser = new ArgumentParser({
@@ -108,6 +110,8 @@ export function buildParser() {
       '  node main.js --scrape hanimeinfo --slug my-slug --method cli',
       '  node main.js --scrape info --category hanime --page hanime --method cli',
       '  node main.js --scrape hanimeindex --method browser',
+      '  node main.js --scrape genres --method cli',
+      '  node main.js --scrape genres --method browser',
       '  node main.js --verify hanime',
       '  node main.js --verify 2d-animation --method cli',
       '  node main.js --thumbnail hanime',
@@ -230,6 +234,9 @@ function resolveAction(args) {
 
   const scrape = String(args.scrape);
 
+  if (scrape === 'genres') {
+    return { type: 'genres', method };
+  }
   if (tokens.listingTokens.includes(scrape)) {
     return { type: 'listing', categoryKey: scrape, method };
   }

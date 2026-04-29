@@ -10,6 +10,8 @@
  *   node main.js --scrape hanime --method browser
  *   node main.js --scrape hanimeinfo --slug my-slug --method cli
  *   node main.js --scrape hanimeindex --method browser
+ *   node main.js --scrape genres --method cli
+ *   node main.js --scrape genres --method browser
  *   node main.js --scrape info --category hanime --page hanime --method cli
  *   node main.js --verify hanime
  *   node main.js --verify 2d-animation --method cli
@@ -30,9 +32,11 @@ import { config } from './src/config/index.js';
 import { scrapeDetails } from './src/services/detailScraper.js';
 import { scrapeListing } from './src/services/listingScraper.js';
 import { scrapeAzIndex } from './src/services/azScraper.js';
+import { scrapeGenresBrowser } from './src/services/genreScraper.js';
 import { scrapeListingHttp } from './src/http/listingScraper.js';
 import { scrapeDetailsHttp } from './src/http/detailScraper.js';
 import { scrapeAzIndexHttp } from './src/http/azScraper.js';
+import { scrapeGenresHttp } from './src/http/genreScraper.js';
 import { createSession } from './src/http/session.js';
 import { logger } from './src/utils/logger.js';
 import { readJson } from './src/utils/storage.js';
@@ -109,8 +113,9 @@ function resolveProgressTarget(action, category) {
     case 'verify':
     case 'thumbnail':
     case 'verifyThumbnail':
+    case 'genres':
       throw new Error(
-        'resolveProgressTarget should not be called for verify/thumbnail actions',
+        'resolveProgressTarget should not be called for verify/thumbnail/genres actions',
       );
     default: {
       /** @type {never} */
@@ -788,6 +793,46 @@ async function runVerifyThumbnail(action) {
 }
 
 /* ------------------------------------------------------------------ */
+/*  Genres scrape action                                              */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Run a `--scrape genres` action: fetch the homepage, extract the
+ * `.nk-genre-list` entries, and write `output/genresList.json`.
+ *
+ * @param {CliAction & { type: 'genres' }} action Parsed action.
+ * @returns {Promise<void>} Resolves once the scrape finishes.
+ */
+async function runGenres(action) {
+  installShutdownHooks();
+  logger.info('nk-cli genres scrape starting', { method: action.method });
+
+  if (action.method === 'cli') {
+    const session = await createSession();
+    await scrapeGenresHttp(session);
+  } else {
+    /** @type {import('puppeteer').Browser | null} */
+    let browser = null;
+    onShutdownAsync(async () => {
+      if (browser) {
+        logger.info('Closing browser during shutdown');
+        await closeBrowser(browser);
+        browser = null;
+      }
+    });
+    try {
+      browser = await launchBrowser();
+      await scrapeGenresBrowser(browser);
+    } finally {
+      await closeBrowser(browser);
+      browser = null;
+    }
+  }
+
+  logger.info('nk-cli genres scrape finished', { method: action.method });
+}
+
+/* ------------------------------------------------------------------ */
 /*  Top-level dispatch                                                */
 /* ------------------------------------------------------------------ */
 
@@ -814,6 +859,12 @@ async function dispatch(action) {
   // Thumbnail verification.
   if (action.type === 'verifyThumbnail') {
     await runVerifyThumbnail(/** @type {CliAction & { type: 'verifyThumbnail' }} */ (action));
+    return;
+  }
+
+  // Genres scrape.
+  if (action.type === 'genres') {
+    await runGenres(/** @type {CliAction & { type: 'genres' }} */ (action));
     return;
   }
 
