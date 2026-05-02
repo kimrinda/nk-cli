@@ -39,8 +39,17 @@ export async function withRetry(fn, options) {
     } catch (error) {
       lastError = error;
       const message = error instanceof Error ? error.message : String(error);
+      const code = /** @type {any} */ (error)?.code ?? '';
+      const status = /** @type {any} */ (error)?.response?.status ?? '';
+      const url = /** @type {any} */ (error)?.config?.url ?? '';
+      const detail = [
+        message || '(no message)',
+        code ? `code=${code}` : '',
+        status ? `status=${status}` : '',
+        url ? `url=${url}` : '',
+      ].filter(Boolean).join(' | ');
       logger.warn(`${label} failed (attempt ${attempt}/${attempts})`, {
-        error: message,
+        error: detail,
       });
       if (attempt < attempts) {
         const delay = baseDelayMs * 2 ** (attempt - 1);
