@@ -40,6 +40,7 @@ import { CATEGORIES } from '../config/categories.js';
  *   | { type: 'azIndex', categoryKey: string, method: ScrapeMethod }
  *   | { type: 'detailBySlug', categoryKey: string, slug: string, method: ScrapeMethod }
  *   | { type: 'detailByPage', categoryKey: string, method: ScrapeMethod }
+ *   | { type: 'azDetailByPage', categoryKey: string, method: ScrapeMethod }
  *   | { type: 'genres', method: ScrapeMethod }
  *   | { type: 'verify', categoryKey: string, method: ScrapeMethod }
  *   | { type: 'thumbnail', categoryKey: string, method: ScrapeMethod }
@@ -110,6 +111,8 @@ export function buildParser() {
       '  node main.js --scrape hanimeinfo --slug my-slug --method cli',
       '  node main.js --scrape info --category hanime --page hanime --method cli',
       '  node main.js --scrape hanimeindex --method browser',
+      '  node main.js --scrape info --page hanimeindex --method cli',
+      '  node main.js --scrape info --page hanimeindex --method browser',
       '  node main.js --scrape genres --method cli',
       '  node main.js --scrape genres --method browser',
       '  node main.js --verify hanime',
@@ -161,11 +164,14 @@ export function buildParser() {
     default: null,
     help: 'Single slug to scrape (used with --scrape <key>info or --scrape info).',
   });
+  const pageChoices = [...tokens.listingTokens, ...tokens.azIndexTokens];
   parser.add_argument('-p', '--page', {
     required: false,
     default: null,
-    choices: tokens.listingTokens,
-    help: 'Replay a previously-saved listing for this category through the detail phase.',
+    choices: pageChoices,
+    help:
+      'Replay a previously-saved listing/index for this category through the detail phase. ' +
+      `Supported: ${pageChoices.join(', ')}.`,
   });
   parser.add_argument('-c', '--category', {
     required: false,
@@ -263,6 +269,10 @@ function resolveAction(args) {
     return { type: 'detailBySlug', categoryKey, slug, method };
   }
   const resolvedPageKey = pageKey ?? categoryKey;
+  // Route azIndex pages to the dedicated azDetailByPage action.
+  if (tokens.azIndexTokens.includes(resolvedPageKey)) {
+    return { type: 'azDetailByPage', categoryKey: resolvedPageKey, method };
+  }
   return { type: 'detailByPage', categoryKey: resolvedPageKey, method };
 }
 
