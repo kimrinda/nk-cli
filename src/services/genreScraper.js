@@ -75,8 +75,8 @@ export async function scrapeGenresBrowser(browser) {
   const page = await newConfiguredPage(browser);
 
   try {
-    const url = config.homeUrl;
-    logger.info('Navigating to homepage for genre list (browser)', { url });
+    const url = `${config.baseUrl.replace(/\/$/, '')}/genre-list/`;
+    logger.info('Navigating to genre list page (browser)', { url });
 
     await withRetry(
       async () => {
