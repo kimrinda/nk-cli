@@ -31,9 +31,9 @@ export const genresOutputPath = path.join(config.paths.output, 'genresList.json'
  * @returns {Promise<Record<string, GenreEntry>>} Parsed genre map.
  */
 export async function scrapeGenresHttp(session) {
-  const url = config.homeUrl;
+  const url = `${config.baseUrl.replace(/\/$/, '')}/genre-list/`;
 
-  logger.info('Fetching homepage for genre list (cli)', { url });
+  logger.info('Fetching genre list page (cli)', { url });
 
   const html = await withRetry(() => session.fetchHtml(url), {
     attempts: config.scrape.retryAttempts,
