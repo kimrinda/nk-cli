@@ -13,6 +13,8 @@
  *   node main.js --scrape genres --method cli
  *   node main.js --scrape genres --method browser
  *   node main.js --scrape info --category hanime --page hanime --method cli
+ *   node main.js --scrape info --page hanimeindex --method cli
+ *   node main.js --scrape info --page hanimeindex --method browser
  *   node main.js --verify hanime
  *   node main.js --verify 2d-animation --method cli
  */
@@ -32,10 +34,12 @@ import { config } from './src/config/index.js';
 import { scrapeDetails } from './src/services/detailScraper.js';
 import { scrapeListing } from './src/services/listingScraper.js';
 import { scrapeAzIndex } from './src/services/azScraper.js';
+import { scrapeAzDetailsBrowser } from './src/services/azDetailScraper.js';
 import { scrapeGenresBrowser } from './src/services/genreScraper.js';
 import { scrapeListingHttp } from './src/http/listingScraper.js';
 import { scrapeDetailsHttp } from './src/http/detailScraper.js';
 import { scrapeAzIndexHttp } from './src/http/azScraper.js';
+import { scrapeAzDetailsHttp } from './src/http/azDetailScraper.js';
 import { scrapeGenresHttp } from './src/http/genreScraper.js';
 import { createSession } from './src/http/session.js';
 import { logger } from './src/utils/logger.js';
@@ -96,6 +100,11 @@ function resolveProgressTarget(action, category) {
     case 'azIndex':
       return {
         command: `scrape:${category.key}:az`,
+        outputFile: category.listingPath,
+      };
+    case 'azDetailByPage':
+      return {
+        command: `scrape:${category.key}:detail`,
         outputFile: category.listingPath,
       };
     case 'detailByPage':
@@ -244,6 +253,49 @@ async function runAzActionBrowser(browser, category, resume) {
     items: result.totalItems,
     file: category.listingPath,
   });
+  if (isShutdownInProgress()) return;
+
+  const proceed = await confirmDetailScrape({
+    label: category.label,
+    itemCount: result.totalItems,
+  });
+  if (!proceed) {
+    logger.info('AZ detail phase skipped by user / non-interactive default', {
+      category: category.key,
+    });
+    return;
+  }
+  if (result.totalItems === 0) {
+    logger.warn('No index items collected — skipping detail phase', {
+      category: category.key,
+    });
+    return;
+  }
+
+  const detailResume = await negotiateAndPrepareProgress(
+    { type: 'azDetailByPage', categoryKey: category.key, method: 'browser' },
+    category,
+  );
+  await scrapeAzDetailsBrowser(browser, category.listingPath, {
+    progress: detailResume.progress,
+    startIndex: detailResume.startIndex,
+  });
+}
+
+/**
+ * Run an `azDetailByPage` action via Puppeteer (standalone, without
+ * prior AZ index scrape).
+ *
+ * @param {import('puppeteer').Browser} browser Active Puppeteer browser.
+ * @param {ReturnType<typeof getCategory>} category Resolved category.
+ * @param {{ progress: ProgressManager, startIndex: number }} resume Resume state.
+ * @returns {Promise<void>} Resolves when the detail phase finishes.
+ */
+async function runAzDetailByPageActionBrowser(browser, category, resume) {
+  await scrapeAzDetailsBrowser(browser, category.listingPath, {
+    progress: resume.progress,
+    startIndex: resume.startIndex,
+  });
 }
 
 /**
@@ -369,6 +421,49 @@ async function runAzActionHttp(session, category, resume) {
     groups: result.totalGroups,
     items: result.totalItems,
     file: category.listingPath,
+  });
+  if (isShutdownInProgress()) return;
+
+  const proceed = await confirmDetailScrape({
+    label: category.label,
+    itemCount: result.totalItems,
+  });
+  if (!proceed) {
+    logger.info('AZ detail phase skipped by user / non-interactive default', {
+      category: category.key,
+    });
+    return;
+  }
+  if (result.totalItems === 0) {
+    logger.warn('No index items collected — skipping detail phase', {
+      category: category.key,
+    });
+    return;
+  }
+
+  const detailResume = await negotiateAndPrepareProgress(
+    { type: 'azDetailByPage', categoryKey: category.key, method: 'cli' },
+    category,
+  );
+  await scrapeAzDetailsHttp(session, category.listingPath, {
+    progress: detailResume.progress,
+    startIndex: detailResume.startIndex,
+  });
+}
+
+/**
+ * Run an `azDetailByPage` action over HTTP (standalone, without
+ * prior AZ index scrape).
+ *
+ * @param {HttpSession} session Initialised HTTP session.
+ * @param {ReturnType<typeof getCategory>} category Resolved category.
+ * @param {{ progress: ProgressManager, startIndex: number }} resume Resume state.
+ * @returns {Promise<void>} Resolves when the detail phase finishes.
+ */
+async function runAzDetailByPageActionHttp(session, category, resume) {
+  await scrapeAzDetailsHttp(session, category.listingPath, {
+    progress: resume.progress,
+    startIndex: resume.startIndex,
   });
 }
 
@@ -895,6 +990,9 @@ async function dispatch(action) {
       case 'azIndex':
         await runAzActionHttp(session, category, resume);
         break;
+      case 'azDetailByPage':
+        await runAzDetailByPageActionHttp(session, category, resume);
+        break;
       case 'detailByPage':
         await runDetailByPageActionHttp(session, category, resume);
         break;
@@ -934,6 +1032,9 @@ async function dispatch(action) {
         break;
       case 'azIndex':
         await runAzActionBrowser(browser, category, resume);
+        break;
+      case 'azDetailByPage':
+        await runAzDetailByPageActionBrowser(browser, category, resume);
         break;
       case 'detailByPage':
         await runDetailByPageActionBrowser(browser, category, resume);
