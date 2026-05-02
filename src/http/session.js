@@ -165,10 +165,27 @@ export class HttpSession {
             ?.status ?? 0;
         const message =
           error instanceof Error ? error.message : String(error);
+        const code = /** @type {any} */ (error)?.code ?? '';
         if (status && isSessionExpiredStatus(status)) {
           lastReason = `Network error (HTTP ${status}) on ${url}: ${message}`;
         } else {
-          throw error;
+          // Re-throw with a descriptive message so retry logs are never empty.
+          const detail = [
+            message || '(no message)',
+            code ? `code=${code}` : '',
+            `url=${url}`,
+          ].filter(Boolean).join(' | ');
+          const wrapped = new Error(detail);
+          wrapped.cause = error;
+          // Preserve axios-specific properties for upstream introspection.
+          if (/** @type {any} */ (error)?.response) {
+            /** @type {any} */ (wrapped).response = /** @type {any} */ (error).response;
+          }
+          if (code) /** @type {any} */ (wrapped).code = code;
+          if (/** @type {any} */ (error)?.config) {
+            /** @type {any} */ (wrapped).config = /** @type {any} */ (error).config;
+          }
+          throw wrapped;
         }
         const refreshed = await this.refreshCookies(lastReason);
         if (!refreshed) {
